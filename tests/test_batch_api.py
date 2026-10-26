@@ -61,7 +61,8 @@ class BatchHTTPTests(unittest.TestCase):
         self.market, self.news, self.model = FakeMarket(), FakeNews(), Mock()
         self.model.complete.side_effect = AssertionError('paid model must not be called')
         self.analysis = Analysis(self.folder/'reports.db', self.market, self.news, None, self.model)
-        self.batch = BatchService(self.analysis, self.folder/'batches.db', timeout_s=.08)
+        # Ordinary lifecycle checks must not depend on CI filesystem speed.
+        self.batch = BatchService(self.analysis, self.folder/'batches.db', timeout_s=2)
         self.batch.bridge.poll_s = .005
         self.http = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.http.analysis, self.http.batch = self.analysis, self.batch
@@ -174,6 +175,7 @@ class BatchHTTPTests(unittest.TestCase):
         self.assertEqual(self.market.calls, ['600000.SH', '600001.SH'])
 
     def test_timeout_keeps_id_blocks_redo_and_manual_review(self):
+        self.batch.bridge.timeout_s = .08
         self.market.block.clear()
         bid = self.submit()
         first = self.settled(bid)

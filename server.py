@@ -1,6 +1,8 @@
 """Loopback-only dashboard; never exposes project files or API credentials."""
 import argparse
+import errno
 import json
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -247,12 +249,37 @@ class Handler(BaseHTTPRequestHandler):
             self.send(500, {'error': '服务异常，请稍后重试'})
 
 
+def is_address_in_use(error):
+    # POSIX EADDRINUSE (98). Windows sockets use WSAEADDRINUSE (10048) if that error appears.
+    codes = (errno.EADDRINUSE, getattr(errno, 'WSAEADDRINUSE', 10048))
+    return getattr(error, 'errno', None) in codes or getattr(error, 'winerror', None) in codes
+
+
+def port_in_use_message(port, demo=False):
+    example = port + 1 if port < 65535 else 8766
+    command = 'python3 server.py'
+    if demo:
+        command += ' --demo'
+    command += f' --port {example}'
+    return (
+        f'端口 {port} 已被占用，无法启动。\n'
+        f'请换一个端口后再试，例如：\n'
+        f'{command}'
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--demo',action='store_true',help='只读合成演示，不读取密钥、不联网')
     args = parser.parse_args()
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
+    try:
+        server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
+    except OSError as error:
+        if not is_address_in_use(error):
+            raise
+        print(port_in_use_message(args.port, args.demo), file=sys.stderr, flush=True)
+        sys.exit(1)
     if args.demo:
         from demo import Demo
         server.demo=Demo()

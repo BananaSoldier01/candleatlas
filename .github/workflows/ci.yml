@@ -1,0 +1,35 @@
+name: Offline checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.14']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6, verified official tag
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - name: Publication boundary scan
+        run: python scripts/check_release.py
+      - name: Python offline regression
+        run: python -m unittest discover -s tests -q
+      - name: JavaScript calculations
+        run: node --test tests/test_guide.js tests/test_price_technical.js
+      - name: JavaScript syntax
+        run: for file in web/*.js; do node --check "$file"; done

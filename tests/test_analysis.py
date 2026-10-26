@@ -85,6 +85,51 @@ class AnalysisTests(unittest.TestCase):
         model=Mock();model.read.return_value={'model':'test-model','base_url':'http://localhost/v1','key':'test-key'};model.complete.return_value=reply()
         return Analysis(Path(folder)/'reports.sqlite3',market,news,Mock(),model)
 
+    def run_technical(self, analysis):
+        with analysis.db() as db:
+            db.execute('INSERT INTO reports VALUES (?,?,?,?,?,?,?,?)',
+                       ('technical','600487.SH','2026-03-21','2026-03-21T16:00:00+08:00',
+                        'running','test',None,None))
+        analysis.run('technical','600487.SH','测试','2026-03-21','',False,{})
+        return analysis.get('technical')
+
+    def test_market_failure_cannot_complete_technical_only_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a=self.engine(tmp)
+            a.market.prices.side_effect=DataError('synthetic market failure')
+            result=self.run_technical(a)
+            self.assertEqual(result['status'],'failed')
+            self.assertIn('未取得有效日 K',result['error'])
+            self.assertIsNone(result['report']['technical'])
+            self.assertIn('日 K 获取失败，未计算技术指标。',result['report']['limitations'])
+            self.assertTrue(any(e['id']=='N1'for e in result['report']['evidence']))
+            self.assertEqual(a.history('600487.SH')['items'][0]['status'],'failed')
+            a.model.complete.assert_not_called()
+
+    def test_empty_or_missing_observation_day_is_failed_without_borrowing_prices(self):
+        for rows in ([],prices(79)):
+            with self.subTest(rows=len(rows)),tempfile.TemporaryDirectory() as tmp:
+                a=self.engine(tmp);a.market.prices.return_value={'items':rows}
+                result=self.run_technical(a)
+                self.assertEqual(result['status'],'failed')
+                self.assertIn('未取得有效日 K',result['error'])
+                self.assertEqual(result['report']['technical']['sample'],0)
+                self.assertIsNone(result['report']['technical']['close'])
+                self.assertEqual(result['report']['price_snapshot'][-1]['date'],'2026-03-21')
+                a.model.complete.assert_not_called()
+
+    def test_short_valid_technical_report_still_completes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a=self.engine(tmp)
+            a.market.prices.return_value={'items':[{'date':'2026-03-21','close_price':10,'volume':100}]}
+            result=self.run_technical(a)
+            self.assertEqual(result['status'],'complete')
+            self.assertIsNone(result['error'])
+            self.assertEqual(result['report']['technical']['sample'],1)
+            self.assertEqual(result['report']['technical']['close'],10)
+            self.assertIsNone(result['report']['technical']['rsi14'])
+            a.model.complete.assert_not_called()
+
     def test_pipeline_excludes_future_news_and_historical_financial(self):
         with tempfile.TemporaryDirectory() as tmp:
             a=self.engine(tmp)

@@ -241,7 +241,7 @@ class AnalysisBridge:
                     # 明确失败：可重试，但记录 report_id（若有）
                     self.fp.rollback(key)
                     return {"ok": False, "report_id": report_id, "charged": False,
-                            "error": f"status={status}", "report_status": status}
+                            "error": row.get("error") or f"status={status}", "report_status": status}
                 # 超时 / running：任务已发出，禁止 rollback 当作未执行
                 self.fp.mark_needs_review(
                     key,

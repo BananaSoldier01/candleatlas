@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
+from analysis import has_usable_technical
 from compare import compare_reports, choose_baseline, COMPARE_VERSION  # noqa: F401
 
 __all__ = ["build_delta", "compare_reports", "choose_baseline", "COMPARE_VERSION",
@@ -66,6 +67,9 @@ def build_delta(analysis, row: dict) -> Optional[dict]:
     for r in rows:
         d = dict(r)
         d["report"] = json.loads(d.pop("payload")) if d["payload"] else None
+        # Legacy complete rows may still lack the price data needed for comparison.
+        if not isinstance(d["report"], dict) or not has_usable_technical(d["report"].get("technical")):
+            continue
         items.append(d)
 
     baseline_row = choose_baseline(items, code, day)

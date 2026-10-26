@@ -46,6 +46,13 @@ def technical(rows):
     return values
 
 
+def has_usable_technical(values):
+    """A usable price sample is required; individual long-window indicators may be absent."""
+    if not isinstance(values,dict):return False
+    sample=values.get('sample');close=values.get('close')
+    return type(sample) is int and sample>0 and finite(close) and close>0
+
+
 def validate_report(text, evidence_ids):
     text=text.strip()
     if text.startswith('```'):text=re.sub(r'^```(?:json)?\s*|\s*```$','',text)
@@ -178,6 +185,10 @@ class Analysis:
             evidence('M1','材料范围与缺失项',payload['limitations'],'观市数据检查')
             self.update(identifier,'技术分析已完成',payload=payload)
             if not use_ai:
+                if not has_usable_technical(payload['technical']):
+                    self.update(identifier,'技术分析未完成，已取得的材料保留','failed',payload,
+                                error='未取得有效日 K 技术指标，已有材料已保存；可重新生成。')
+                    return
                 self.update(identifier,'技术分析已保存','complete',payload);return
             if not (payload['technical'] and payload['technical']['sample']) and not any(r['id'].startswith(('N','F')) for r in payload['evidence']):raise DataError('未取得有效分析材料，未调用模型。')
             self.update(identifier,'模型正在整理综合解读',payload=payload)

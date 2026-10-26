@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from analysis import Analysis
 from batch import SqliteStore
@@ -224,6 +224,49 @@ class BatchHTTPTests(unittest.TestCase):
         self.assertEqual(final['batch']['status'], 'done')
         self.assertEqual(final['items'][0]['report_id'], successful_id)
         self.assertEqual(self.market.calls, ['600000.SH', '600001.SH', '600001.SH'])
+
+    def test_failed_report_error_reaches_batch_and_survives_reopen(self):
+        self.market.fail.add('600000.SH')
+        bid = self.submit()
+        first = self.settled(bid)
+        item = first['items'][0]
+        status, report = self.request('/api/analysis?id='+item['report_id'])
+        self.assertEqual(status, 200)
+        self.assertEqual((item['status'], item['report_status'], report['status']),
+                         ('failed', 'failed', 'failed'))
+        self.assertIn('未取得有效日 K', report['error'])
+        self.assertEqual(item['error'], report['error'])
+        self.assertIsNone(self.batch.fingerprints.get(self.batch._key(item)))
+        self.http.batch = BatchService(self.analysis, self.folder/'batches.db')
+        _, restored = self.request('/api/batch?id='+bid)
+        self.assertEqual(restored['items'][0]['error'], report['error'])
+        self.assertEqual(restored['items'][0]['report_id'], item['report_id'])
+        self.market.fail.clear()
+        self.assertEqual(self.request('/api/batch/retry', {'id': bid})[0], 202)
+        final = self.settled(bid)
+        self.assertEqual(final['items'][0]['status'], 'done')
+        self.assertNotEqual(final['items'][0]['report_id'], item['report_id'])
+        self.assertEqual(self.market.calls, ['600000.SH', '600000.SH'])
+        self.assertEqual(self.request('/api/analysis?id='+item['report_id'])[1]['error'], report['error'])
+
+    def test_terminal_report_error_and_status_fallback(self):
+        item = {'code': '600000.SH', 'day': DAY, 'mode': 'technical'}
+        task = self.batch.bridge.make_task()
+        for status in ('failed', 'interrupted'):
+            for error in ('合成故障：具体原因已保存', None, '', 'missing'):
+                with self.subTest(status=status, error=error):
+                    row = {'status': status}
+                    if error != 'missing':
+                        row['error'] = error
+                    with patch.object(self.analysis, 'start', return_value={'id': 'terminal-report'}), \
+                         patch.object(self.analysis, 'get', return_value=row):
+                        result = task(item)
+                    self.assertFalse(result['ok'])
+                    self.assertEqual(result['report_id'], 'terminal-report')
+                    self.assertEqual(result['report_status'], status)
+                    self.assertEqual(result['error'], row.get('error') or 'status='+status)
+                    self.assertIsNone(self.batch.fingerprints.get(self.batch._key(item)))
+        self.assertEqual(self.market.calls, [])
 
     def test_rejected_redo_preserves_previous_report(self):
         first = self.settled(self.submit())

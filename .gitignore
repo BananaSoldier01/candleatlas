@@ -1,0 +1,12 @@
+# Local credentials and generated/user data
+.env
+.env.*
+!.env.example
+data/
+logs/
+output/
+__pycache__/
+*.pyc
+.DS_Store
+.playwright-cli/
+.coverage

@@ -1,0 +1,28 @@
+{
+  "dataset": "synthetic",
+  "reviewed": true,
+  "capture_date": "2026-10-26",
+  "source": "Running application in --demo mode; original browser captures, manually inspected for public use.",
+  "files": {
+    "docs/images/chart.png": {
+      "sha256": "f0f6f2dbd1cf5ffe4d4a4d607eeb58f473cfaa414a4d7d23f9c2aa095eb0506f",
+      "width": 1600,
+      "height": 1120
+    },
+    "docs/images/guide.png": {
+      "sha256": "ce0ab64c904e716ef9195c95aaf2bd948f84c9164e35fcfb24bbe1e6aa5ae517",
+      "width": 1600,
+      "height": 1120
+    },
+    "docs/images/report.png": {
+      "sha256": "441be547c34172e14b5546cb56ce518a0301a6c0803823a479833a901992fc42",
+      "width": 1600,
+      "height": 1120
+    },
+    "docs/images/workbench.png": {
+      "sha256": "336411090226579f230345d133f0568b534d57ebf584f8fa816fe3963b14fc53",
+      "width": 1600,
+      "height": 1120
+    }
+  }
+}

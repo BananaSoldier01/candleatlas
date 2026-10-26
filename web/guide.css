@@ -1,0 +1,124 @@
+/* Beginner guide: the existing paper, green accents and native SVG chart language. */
+#beginner-guide{max-width:1190px;margin:0 auto;color:var(--ink)}
+#beginner-guide button,#beginner-guide input,#beginner-guide select{font:inherit}
+#beginner-guide button{border:1px solid #dce4dc;border-radius:5px;background:#fff;color:var(--ink);padding:8px 12px}
+#beginner-guide button:hover{background:#f1f6f1;border-color:#a8c3b2}
+#beginner-guide button:disabled{cursor:default}
+#beginner-guide a{color:var(--accent);text-underline-offset:3px}
+#beginner-guide input:focus-visible{outline:3px solid #e2ab53;outline-offset:2px}
+.guide-welcome{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:16px}
+.guide-welcome p{margin:0;color:#607267;font-size:13px;line-height:1.8}
+.guide-welcome small{font-size:11px;color:#607267;white-space:nowrap}
+.guide-shortcuts{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:22px}
+#beginner-guide .guide-shortcuts button{display:flex;align-items:center;text-align:left;gap:12px;padding:15px 18px;background:#fff;border-color:var(--line)}
+.guide-shortcuts b{display:block;font-size:13px;font-weight:550}
+.guide-shortcuts small{display:block;color:#65756c;font-size:11px;margin-top:5px}
+.guide-shortcuts .legend-glyph{width:27px;height:24px;flex-shrink:0}
+.guide-shortcuts .guide-shortcut-arrow{margin-left:auto;color:var(--accent)}
+.guide-layout{display:grid;grid-template-columns:252px minmax(0,1fr);gap:20px;align-items:start}
+.guide-directory{position:sticky;top:0;background:#fafbf9;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.guide-directory>summary{padding:16px;cursor:pointer;font-weight:600;font-size:13px}
+.guide-directory[open]>summary{border-bottom:1px solid var(--line)}
+.guide-directory-inner{padding:16px 12px 8px}
+.guide-directory label{display:block;font-size:11px;color:#627269;margin-bottom:8px}
+#guide-search{display:block;width:100%;min-width:0;border:1px solid #d3ddd3;border-radius:5px;padding:11px;background:#fff;color:var(--ink);font-size:13px}
+.guide-result-count{font-size:11px;color:#627269;margin:10px 0}
+.guide-categories{display:flex;flex-wrap:wrap;gap:5px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+#beginner-guide .guide-categories button{font-size:11px;padding:6px 7px;background:transparent;border-color:transparent}
+#beginner-guide .guide-categories button[aria-pressed=true]{background:#e4eee6;color:#205f44}
+#guide-term-list{max-height:calc(100dvh - 440px);min-height:180px;overflow:auto;scrollbar-width:thin;margin-top:12px;padding-bottom:5px}
+.guide-term-group{margin:0 0 15px}
+.guide-term-group h3{font-size:10px;font-weight:500;letter-spacing:.8px;color:#68796f;margin:8px 7px}
+#beginner-guide .guide-term-group button{border:0;border-radius:4px;display:flex;justify-content:space-between;gap:6px;text-align:left;width:100%;font-size:12px;background:transparent;padding:10px 9px;line-height:1.5}
+#beginner-guide .guide-term-group button[aria-current=true]{background:#e4eee6;color:#205f44;font-weight:600}
+.guide-term-group button>span{color:#7b927f}
+.guide-empty{font-size:12px;line-height:1.8;padding:8px}
+.guide-article{background:#fff;border:1px solid var(--line);border-radius:8px;padding:26px 30px;min-width:0;scroll-margin-top:12px}
+.guide-article-head{display:flex;justify-content:space-between;gap:16px;align-items:center}
+.guide-article h3{font-family:"Songti SC","STSong",serif;font-size:27px;font-weight:600;margin:20px 0 12px;line-height:1.5;letter-spacing:.4px}
+.guide-article p{font-size:13px;line-height:1.95;margin:12px 0;overflow-wrap:anywhere}
+.guide-article .guide-intro{font-size:16px;line-height:1.8;color:#416453;margin:0 0 18px}
+.guide-article h4{font-size:12px;font-weight:600;margin:0 0 6px}
+.guide-keys{display:flex;gap:17px;flex-wrap:wrap;margin:14px 0}
+.guide-key{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:#55675d}
+.guide-example{padding:15px 18px;background:#f4f7f2;border-left:3px solid #8eb29b;margin:20px 0;border-radius:0 5px 5px 0}
+.guide-example p,.guide-misconception p{margin:0}
+.guide-misconception{padding:16px 0;border-bottom:1px solid var(--line);margin-top:10px}
+.guide-misconception h4{color:#926637}
+.guide-location{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:20px 0}
+.guide-location p{margin:0;color:#5c7063;font-size:12px}
+.guide-location button{white-space:nowrap;font-size:12px!important}
+.guide-related{display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:12px;color:#66766c;margin:15px 0 23px}
+#beginner-guide .guide-related button{font-size:11px;border-color:var(--line);padding:6px 8px}
+.guide-sources{font-size:11px;color:#5d7164;border-top:1px solid var(--line);padding-top:14px}
+.guide-sources summary{cursor:pointer;line-height:1.8}
+.guide-sources ul{padding-left:18px;margin:12px 0}
+.guide-sources li{margin:12px 0}
+.guide-sources p{font-size:11px;line-height:1.8;margin:5px 0}
+.guide-article-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:22px;border-top:1px solid var(--line);padding-top:18px;font-size:11px;color:#65766a}
+#beginner-guide .guide-article-footer button{border:0;font-size:12px;padding:6px 0;color:#38684d}
+.guide-lab{border:1px solid #dfe8df;border-radius:7px;margin:22px 0;padding:18px 18px 12px;min-width:0}
+.guide-lab-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}
+.guide-lab-heading h4{font-size:15px;margin:7px 0 0;font-weight:550}
+.guide-lab-switch{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 15px}
+#beginner-guide .guide-lab-switch button{font-size:11px;padding:6px 12px;border-color:var(--line)}
+#beginner-guide .guide-lab-switch button[aria-pressed=true]{background:#e4eee6;color:#205f44;border-color:#a8c3b2}
+.guide-indicator-context{font-size:12px!important;color:#536c5b}
+.guide-indicator-lesson{border-left:3px solid #91b29d;padding:3px 0 3px 13px;margin:18px 0}
+.guide-indicator-lesson p{font-size:12px;line-height:1.9;margin:5px 0}
+.guide-indicator-method{border-top:1px solid var(--line);padding-top:12px;margin-top:18px;color:#5b7163;font-size:11px}
+.guide-indicator-method summary{cursor:pointer}.guide-indicator-method p{font-size:11px}
+.guide-macd-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:15px 0}
+.guide-macd-values>div{padding:12px 10px;background:#f5f7f3;border-radius:5px}
+.guide-macd-values span{display:block;font-size:10px;color:#5d7164;margin-bottom:8px}
+.guide-macd-values strong{font-weight:550;font-size:18px;font-variant-numeric:tabular-nums}
+#guide-indicator-svg [data-guide-indicator-index]{cursor:pointer}
+.guide-data-source{padding-bottom:12px;margin-bottom:16px;border-bottom:1px solid var(--line)}
+.guide-source-tabs{display:flex;gap:6px;flex-wrap:wrap}
+#beginner-guide .guide-source-tabs button{font-size:12px;padding:8px 11px}
+#beginner-guide .guide-source-tabs button[aria-pressed=true]{color:#205f44;background:#e4eee6;border-color:#a8c3b2}
+.guide-real-selectors{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:12px;margin-top:16px}
+.guide-real-selectors label{display:block;color:#5d7164;font-size:11px;min-width:0}
+.guide-real-selectors select{width:100%;max-width:100%;margin-top:7px;border:1px solid #d2ded2;border-radius:4px;background:#fafbf9;padding:9px 7px;color:var(--ink);font-size:12px!important}
+.guide-real-status{background:#f3f7f2;border-radius:4px;padding:10px 12px;color:#416453;font-size:12px!important}
+.guide-real-date-label{display:flex;align-items:center;gap:8px;min-width:0}
+.guide-real-date-label select{max-width:170px}
+.guide-real-period{display:block;font-size:12px;color:#5d7164;margin:12px 0}
+.guide-real-period select{border:1px solid #d2ded2;background:#fafbf9;padding:7px;border-radius:4px;color:var(--ink)}
+.guide-real-ohlc{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;background:#fafbf9;padding:12px;border-radius:4px}
+.guide-real-ohlc span{display:block;font-size:11px;color:#65766a;margin-bottom:7px}
+.guide-real-ohlc strong{font-weight:550;font-size:15px;font-variant-numeric:tabular-nums}
+#beginner-guide .guide-lab-heading button{font-size:11px;color:#5d7164;padding:5px 9px}
+.guide-number-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:9px}
+.guide-number-grid label{font-size:11px;line-height:1.5;color:#607267}
+.guide-number-grid input{display:block;width:100%;border:1px solid #d2ded2;border-radius:4px;background:#fafbf9;padding:9px 6px;margin-top:6px;color:var(--ink);font-size:13px!important;font-variant-numeric:tabular-nums}
+.guide-candle-presets{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px}
+#beginner-guide .guide-candle-presets button{padding:6px 10px;font-size:11px}
+.guide-small,#beginner-guide p.guide-small{font-size:11px;color:#5f7466;line-height:1.8}
+.guide-lab-chart{margin:15px 0 8px;min-width:0;overflow-x:auto}
+.guide-lab-chart svg,.guide-structure svg{width:100%;display:block;overflow:visible}
+.guide-lab-chart text,.guide-structure text{font-size:12px;fill:#566d5d;font-family:inherit;font-variant-numeric:tabular-nums}
+.guide-gridline{stroke:#dce5dc;stroke-dasharray:3 4}
+.guide-gridline.guide-indicator-reference{stroke:#89958b;stroke-dasharray:7 4}
+.guide-axis{stroke:#a0b2a4;stroke-width:1}
+.guide-formula{background:#f5f7f3;padding:12px 14px;border-radius:5px;font-size:13px;line-height:1.95;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.guide-formula strong{font-size:17px;font-weight:550}
+.guide-validation{padding:12px;background:#fff5ec;color:#8c552b;border-radius:5px}
+.guide-step-controls{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin:13px 0;font-size:12px;color:#5b7061}
+.guide-step-controls select{border:1px solid #d3ddd3;border-radius:4px;background:#fafbf9;padding:6px;color:var(--ink)}
+.guide-step-controls input[type=checkbox]{accent-color:var(--accent);vertical-align:middle}
+#beginner-guide .guide-step-controls button{font-size:11px;padding:7px 10px;white-space:nowrap}
+.guide-range-label{display:flex;align-items:center;gap:10px;flex:1;justify-content:center;min-width:180px;white-space:nowrap}
+.guide-range-label input{min-width:70px;width:100%;max-width:220px;accent-color:var(--accent)}
+.guide-range-label output{white-space:nowrap;font-size:11px;font-variant-numeric:tabular-nums}
+.guide-structure{margin:20px 0;padding:15px;background:#fafbf9;border:1px solid var(--line);border-radius:5px}
+.guide-structure figcaption{font-size:11px;line-height:1.8;color:#5f7466;margin-top:10px}
+.guide-bottom-note{font-size:11px;color:#607267;line-height:1.9;margin:18px 0 0}
+@media(min-width:1051px){.guide-directory>summary{display:none}}
+@media(max-width:1050px){.guide-layout{grid-template-columns:218px minmax(0,1fr);gap:14px}.guide-article{padding:24px 22px}.guide-shortcuts{gap:8px}#beginner-guide .guide-shortcuts button{padding:13px 11px;gap:8px}.guide-shortcuts small{font-size:10px}.guide-number-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:760px){.guide-welcome{align-items:flex-start;gap:5px;flex-direction:column}.guide-shortcuts{gap:7px;margin-bottom:16px}.guide-shortcuts small,.guide-shortcut-arrow{display:none!important}#beginner-guide .guide-shortcuts button{padding:12px 8px;flex-direction:column;text-align:center;gap:6px}.guide-shortcuts b{font-size:11px}.guide-layout{grid-template-columns:1fr;gap:13px}.guide-directory{position:static}.guide-directory-inner{padding:12px}#guide-term-list{max-height:320px;min-height:0}.guide-categories{gap:4px}.guide-article{padding:22px 18px}.guide-article h3{font-size:24px}.guide-article-head .eyebrow{font-size:9px;letter-spacing:.5px}.guide-location{align-items:flex-start;flex-direction:column}.guide-lab{padding:15px 10px}.guide-number-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.guide-number-grid label{font-size:10px}.guide-range-label{flex-basis:100%;order:1}.guide-lab-chart svg{min-width:0}.guide-lab-chart text,.guide-structure text{font-size:15px}.guide-structure{padding:10px}.guide-lab-heading h4{font-size:14px}}
+@media(max-width:760px){.guide-lab-chart svg{min-width:520px}.guide-lab-chart::after{content:'图解可左右滑动查看';display:block;font-size:10px;color:#607267;margin-top:7px}}
+@media(max-width:760px){.guide-real-selectors{grid-template-columns:1fr}.guide-real-date-label{order:1;flex-basis:100%;justify-content:center}.guide-real-ohlc{gap:7px;padding:10px}.guide-real-ohlc strong{font-size:13px}}
+@media(min-width:761px) and (max-width:1050px){.guide-layout{grid-template-columns:1fr}.guide-directory{position:static}.guide-directory>summary{display:list-item}#guide-term-list{max-height:320px;min-height:0}}
+@media(max-width:1250px){.guide-shortcuts{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:760px){.guide-macd-values{gap:6px}.guide-macd-values>div{padding:10px 6px}.guide-macd-values strong{font-size:15px}.guide-macd-values span{font-size:10px}.guide-lab-switch{gap:5px}#beginner-guide .guide-lab-switch button{padding:6px 10px}}

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "official-disclosures-1",
+  "title": "本机已核验官方披露材料",
+  "type": "object",
+  "required": ["schema_version", "status", "code", "date", "period_end", "items", "versions", "rule", "scope", "note", "financial_values"],
+  "properties": {
+    "schema_version": {"const": "official-disclosures-1"},
+    "status": {"enum": ["available", "unconfigured", "uncovered", "period_not_covered", "not_yet_available", "failed"]},
+    "code": {"type": "string"},
+    "date": {"type": "string", "format": "date"},
+    "period_end": {"type": "string", "format": "date"},
+    "financial_values": {"type": "null"},
+    "items": {"type": "array", "items": {"$ref": "#/$defs/material"}},
+    "versions": {"type": "array", "items": {"$ref": "#/$defs/material"}}
+  },
+  "$defs": {
+    "material": {
+      "type": "object",
+      "required": ["id", "stock_code", "period_end", "title", "document_kind", "url", "notice_date", "available_at", "fetched_at", "index_fetched_at", "sha256", "published_precision", "notice_date_basis"],
+      "properties": {
+        "document_kind": {"enum": ["annual_report", "revised_report", "correction_notice"]},
+        "published_precision": {"const": "date"},
+        "notice_date_basis": {"const": "cninfo_official_announcement_index"},
+        "notice_date": {"type": "string", "format": "date"},
+        "period_end": {"type": "string", "format": "date"},
+        "available_at": {"type": "string", "format": "date-time"},
+        "fetched_at": {"type": "string", "format": "date-time"},
+        "index_fetched_at": {"type": "string", "format": "date-time"},
+        "url": {"type": "string", "pattern": "^https://static\\.cninfo\\.com\\.cn/finalpage/[0-9-]+/[0-9]+\\.PDF$"}
+      }
+    }
+  }
+}

@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "guanshi-report-delta-2",
+  "title": "自选报告前后变化摘要",
+  "type": "object",
+  "required": [
+    "compare_version",
+    "status",
+    "comparable",
+    "reasons",
+    "selection",
+    "baseline",
+    "current",
+    "deltas",
+    "labels",
+    "notes"
+  ],
+  "properties": {
+    "compare_version": {
+      "const": "guanshi-report-delta-2"
+    },
+    "status": {
+      "enum": [
+        "first_analysis",
+        "comparable",
+        "limited",
+        "incomparable"
+      ]
+    },
+    "comparable": {
+      "type": "boolean",
+      "description": "true 仅表示仍有可比部分；须结合 status 与逐项 display"
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "selection": {
+      "type": "object",
+      "properties": {
+        "rule": {
+          "type": "string"
+        },
+        "old_date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "new_date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "backfilled_baseline": {
+          "type": "boolean"
+        }
+      }
+    },
+    "deltas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "metric",
+          "old",
+          "new",
+          "diff",
+          "direction",
+          "comparable"
+        ],
+        "properties": {
+          "metric": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          },
+          "old": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "new": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "diff": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "direction": {
+            "enum": [
+              "up",
+              "down",
+              "flat",
+              "one_missing",
+              "both_missing",
+              "not_comparable",
+              "window_sensitive"
+            ],
+            "description": "not_comparable/window_sensitive 时禁止展示涨跌方向"
+          },
+          "comparable": {
+            "type": "boolean"
+          },
+          "display": {
+            "enum": [
+              "full",
+              "value_only",
+              "hidden_direction"
+            ],
+            "description": "接入端渲染约束：hidden_direction 不得红涨绿跌"
+          },
+          "direction_suppressed": {
+            "type": "boolean"
+          },
+          "window_init_sensitive": {
+            "type": "boolean",
+            "description": "MACD/RSI 等对样本窗口起点敏感"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "labels": {
+      "type": "object"
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

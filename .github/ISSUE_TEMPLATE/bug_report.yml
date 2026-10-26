@@ -1,0 +1,19 @@
+name: 问题反馈
+description: 报告可复现的问题
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题与复现步骤
+      description: 写明页面、观察日、演示/真实模式及实际行为，不要粘贴Key或私人记录。
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 环境
+      placeholder: 操作系统、Python版本、浏览器、项目版本
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为与脱敏截图

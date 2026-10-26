@@ -1,0 +1,14 @@
+name: 改进建议
+description: 描述实际使用场景和完成条件
+body:
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景与当前困难
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 建议范围与验收条件
+      description: 优先一个明确的小改动，说明是否涉及数据口径或外部请求。

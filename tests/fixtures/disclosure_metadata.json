@@ -1,0 +1,56 @@
+{
+  "source": "official PDFs frozen by the bounded collector; metadata only, no financial values",
+  "documents": [
+    {
+      "stock_code": "603558",
+      "period_end": "2024-12-31",
+      "document_kind": "correction_notice",
+      "archive_date": "2025-07-12",
+      "notice_date": "2025-07-12",
+      "notice_date_basis": "document_date_matches_official_archive",
+      "available_at": "2025-07-13T00:00:00+08:00",
+      "financial_values": null,
+      "original_notice_date": "2025-03-25",
+      "has_before_after": true,
+      "id": 7,
+      "url": "https://static.cninfo.com.cn/finalpage/2025-07-12/1224144674.PDF",
+      "raw": "raw/007.bin",
+      "sha256": "8c4e68271746b183f4f7f8556112ed1bcd0d446e25193eee39cc795c50b6f92c",
+      "fetched_at": "2026-10-23T06:02:54+00:00",
+      "integrity": "match"
+    },
+    {
+      "stock_code": "603558",
+      "period_end": "2024-12-31",
+      "document_kind": "annual_report",
+      "archive_date": "2025-03-25",
+      "notice_date": "2025-03-25",
+      "notice_date_basis": "original_disclosure_referenced_in_correction",
+      "available_at": "2025-03-26T00:00:00+08:00",
+      "financial_values": null,
+      "id": 8,
+      "url": "https://static.cninfo.com.cn/finalpage/2025-03-25/1222880535.PDF",
+      "raw": "raw/008.bin",
+      "sha256": "963c11100b7cd7fad0917023931198b561b7551d309e3b58c26855b0392e7843",
+      "fetched_at": "2026-10-23T06:04:34+00:00",
+      "integrity": "match",
+      "date_evidence_id": 7
+    },
+    {
+      "stock_code": "603558",
+      "period_end": "2023-12-31",
+      "document_kind": "annual_report",
+      "archive_date": "2024-03-16",
+      "notice_date": null,
+      "notice_date_basis": "unverified_archive_date_only",
+      "available_at": null,
+      "financial_values": null,
+      "id": 9,
+      "url": "https://static.cninfo.com.cn/finalpage/2024-03-16/1219311644.PDF",
+      "raw": "raw/009.bin",
+      "sha256": "222e8adaf8f62c54f10f1e73f711331e31ebd992cbfee0bfa2785b367aa65eaa",
+      "fetched_at": "2026-10-23T06:04:35+00:00",
+      "integrity": "match"
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "guanshi-tech-score-2",
+  "title": "观市可解释技术评分 assessment",
+  "type": "object",
+  "required": ["rule_version", "asof", "sample", "components", "total", "coverage", "missing_reasons", "explanations", "warnings", "method", "meta"],
+  "properties": {
+    "rule_version": {"const": "guanshi-tech-score-2"},
+    "asof": {"type": ["string", "null"], "description": "行情观察日，来自 technical.asof"},
+    "sample": {"type": "integer", "minimum": 0, "description": "连续有效收盘价样本数"},
+    "components": {
+      "type": "object",
+      "required": ["trend", "momentum", "volume_coord", "overheat"],
+      "properties": {
+        "trend": {"$ref": "#/$defs/component"},
+        "momentum": {"$ref": "#/$defs/component"},
+        "volume_coord": {"$ref": "#/$defs/component"},
+        "overheat": {"$ref": "#/$defs/component"}
+      }
+    },
+    "total": {
+      "type": "object",
+      "required": ["value", "status", "comparable", "formula", "note"],
+      "properties": {
+        "value": {"type": ["number", "null"]},
+        "status": {"enum": ["ok", "partial", "missing"]},
+        "comparable": {"type": "boolean"},
+        "formula": {"type": "string"},
+        "weights": {"type": "object"},
+        "note": {"type": "string"}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["components_scored", "components_total", "mean_rule_coverage"],
+      "properties": {
+        "components_scored": {"type": "integer", "minimum": 0, "maximum": 4},
+        "components_total": {"const": 4},
+        "mean_rule_coverage": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "missing_reasons": {"type": "array", "items": {"type": "string"}},
+    "explanations": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "method": {"type": "string"},
+    "meta": {
+      "type": "object",
+      "required": ["generated_by", "context", "disclaimer"],
+      "properties": {
+        "generated_by": {"type": "string"},
+        "context": {"type": "object"},
+        "disclaimer": {"type": "string"}
+      }
+    }
+  },
+  "$defs": {
+    "component": {
+      "type": "object",
+      "required": ["status", "score", "raw", "rules", "explanation", "coverage", "missing"],
+      "properties": {
+        "status": {"enum": ["ok", "partial", "missing", "insufficient"]},
+        "score": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+        "raw": {"type": "object"},
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "input", "raw", "points", "max_points", "threshold", "note"],
+            "properties": {
+              "id": {"type": "string"},
+              "input": {"type": "string"},
+              "raw": {},
+              "points": {"type": "number"},
+              "max_points": {"type": "number"},
+              "threshold": {"type": "string"},
+              "note": {"type": "string"}
+            }
+          }
+        },
+        "explanation": {"type": "string"},
+        "coverage": {"type": "number", "minimum": 0, "maximum": 1},
+        "missing": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

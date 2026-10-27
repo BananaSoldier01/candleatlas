@@ -26,13 +26,18 @@ def occupy(host='127.0.0.1'):
 
 class StartupTests(unittest.TestCase):
     def stop(self, proc):
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+        finally:
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
 
     def run_server(self, *args, timeout=8):
         return subprocess.run(
@@ -98,6 +103,17 @@ class StartupTests(unittest.TestCase):
         self.assertTrue(runtime['synthetic'])
         self.stop(proc)
         self.assertIsNotNone(proc.returncode)
+        self.assertTrue(proc.stdout.closed)
+        self.assertTrue(proc.stderr.closed)
+
+    def test_cleanup_closes_pipes_for_already_exited_child(self):
+        holder, port = occupy()
+        self.addCleanup(holder.close)
+        proc = self.start_server('--demo', '--port', str(port))
+        self.assertEqual(proc.wait(timeout=8), 1)
+        self.stop(proc)
+        self.assertTrue(proc.stdout.closed)
+        self.assertTrue(proc.stderr.closed)
 
     def test_other_oserror_is_not_reported_as_port_in_use(self):
         error = OSError(errno.EACCES, 'Permission denied')

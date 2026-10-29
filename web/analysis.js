@@ -116,9 +116,17 @@
     const sections=p.ai?`<div class="analysis-sections">${Object.entries({overview:'当前状态',supporting:'支持关注的依据',opposing:'相反证据与风险',watch:'后续核对事项'}).map(([k,title])=>`<section><h4>${title}</h4>${p.ai[k].map(row=>{const tagHTML=view?view.kindTagHTML(row.evidence,d.evidence_kinds):'';return `<p>${esc(row.text)}</p><div class="evidence-buttons">${row.evidence.map(id=>`<button data-evidence="${esc(id)}">依据 ${esc(id)}</button>`).join('')}${tagHTML}</div>`;}).join('')}</section>`).join('')}</div>`:`<p class="analysis-no-ai">${busy?'正在准备或生成解读…':d.error?esc(d.error):'尚未生成 AI 解读。技术指标与材料已保存，可配置模型后手动生成。'}</p>`;
     $('analysis-result').innerHTML=`<div class="analysis-report-head"><div><h3>${esc(p.name)} · ${esc(p.date)} 分析</h3><p class="footnote">生成于 ${esc(new Date(d.created).toLocaleString('zh-CN'))} · ${p.model?'模型 '+esc(p.model):'仅程序计算'}${p.date!==state.date?' · 与当前观察日不同，以下为所选历史报告':''}</p></div><button id="analysis-observe" ${busy?'disabled':''}>关联到关注记录</button></div>${screen}<h3>行情状态 <small>程序计算</small></h3>${t?`<p class="trend-label">${esc(t.trend)} · 连续有效样本 ${t.sample} 个交易日</p>${trendRules(t.trend)}<div class="analysis-facts">${Object.entries(names).map(([k,label])=>`<div><small>${label}</small><b>${value(t[k])}</b></div>`).join('')}</div>`:'<p class="empty-hint">行情未取得，本次无技术指标。</p>'}${assessmentHTML(p.assessment,d.reading_notes)}${deltaHTML(d)}${p.disclosures?`<section class="disclosure-panel"><h3>本次报告保存的披露资料</h3>${disclosureHTML(p.disclosures)}</section>`:""}<h3>综合解读 <small>AI 生成，需结合依据核对</small></h3>${aiNote}${sections}<details class="analysis-limitations" open><summary>材料范围与缺失项</summary><ul>${limitHTML}</ul></details><div class="analysis-evidence"><h3>本次分析依据</h3>${evidence.map(evidenceHTML).join('')}</div><p class="footnote">引用编号已检查；引用存在不代表解释或推断必然正确。指标和报告用于研究核对，不是收益保证。</p>`;
   }
+  let reportWatch={id:'',status:''};
   async function report(id,token=version){
     clearTimeout(timer);pinnedId=id;
-    try{const d=await api('analysis',{id});if(token!==version)return;render(d);if(d.status==='running')timer=setTimeout(()=>report(id,token),2500);}
+    try{
+      const d=await api('analysis',{id});if(token!==version)return;
+      const previous=reportWatch.id===id?reportWatch.status:'';
+      reportWatch={id,status:typeof d.status==='string'?d.status:''};
+      render(d);
+      if(d.status==='running')timer=setTimeout(()=>report(id,token),2500);
+      else if(previous==='running')document.dispatchEvent(new CustomEvent('records-updated'));
+    }
     catch(e){if(token===version){busy=false;controls();$('analysis-status').textContent=e.message;}}
   }
   async function history(){

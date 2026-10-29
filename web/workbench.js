@@ -51,9 +51,13 @@
   document.addEventListener('workspace-selected',e=>{if(e.detail==='watch')load();else ++version;});
   document.addEventListener('open-desk-stock',e=>{
     const code=typeof e.detail==='string'?e.detail:'';if(!code)return;
-    chosen=code;filter='all';
+    chosen=code;filter='all';$('desk-find').value='';
     for(const x of $('desk-filter').querySelectorAll('button')){const on=x.dataset.filter==='all';x.classList.toggle('active',on);x.setAttribute('aria-pressed',String(on));}
-    if(here()){if(data)render();else load();}else showWorkspace('watch');
+    const known=Array.isArray(data?.items)&&data.items.some(r=>r.thscode===code);
+    const onWatch=here();
+    if(!onWatch)showWorkspace('watch');
+    if(known)render();
+    else if(onWatch)load();
   });
   document.addEventListener('privacy-changed',()=>{if(data)render();});
   load();

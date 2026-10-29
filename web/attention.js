@@ -19,5 +19,7 @@
     document.dispatchEvent(new CustomEvent('open-desk-stock',{detail:button.dataset.openDesk}));
   });
   document.addEventListener('day-selected',load);
+  document.addEventListener('records-updated',load);
+  document.addEventListener('workspace-selected',event=>{if(event.detail==='market')load();});
   if(state.date)load();
 })();

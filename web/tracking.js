@@ -27,6 +27,7 @@ function reviewPhrase(item){
   if(item.phrase)return item.phrase;
   if(item.status==='appeared')return `已出现（首次 ${item.first_seen_date||'—'}，当日取值 ${formatPointNumber(item.value_at_first_seen)}）`;
   if(item.status==='not_appeared')return `未出现（已核对 ${item.checked_days||0} 个交易日）`;
+  if(item.status==='intraday')return '盘中未定稿';
   if(item.status==='pending')return '尚未到期';
   if(item.status==='manual')return '需自行核对';
   return '数据缺失';

@@ -36,6 +36,7 @@ STATIC['/price-technical.js'] = ('price-technical.js', 'text/javascript')
 STATIC['/guide-content.js'] = ('guide-content.js', 'text/javascript')
 STATIC['/guide.js'] = ('guide.js', 'text/javascript')
 STATIC['/guide.css'] = ('guide.css', 'text/css')
+STATIC['/first-screen-view.js'] = ('first-screen-view.js', 'text/javascript')
 
 
 class Handler(BaseHTTPRequestHandler):

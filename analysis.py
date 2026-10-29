@@ -106,6 +106,10 @@ class Analysis:
             d['delta']=build_delta(self,d)
         except Exception:
             d['delta']=None
+        try:
+            from first_screen import attach_disclosure;attach_disclosure(d)
+        except Exception:
+            pass
         return d
 
     def update(self,identifier,phase,status='running',payload=None,error=None):

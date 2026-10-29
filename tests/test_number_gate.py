@@ -29,14 +29,32 @@ def report(rows):
 class NumberGateTests(unittest.TestCase):
     def test_source_numbers_expand_suffixes_and_ignore_non_claims(self):
         got=source_numbers(['增持 1,000 万股，约 1.5 亿，增幅 12.5%。'])
-        self.assertIn(Decimal('10000000'),got)
-        self.assertIn(Decimal('150000000'),got)
-        self.assertIn(Decimal('0.125'),got)
-        self.assertEqual(source_numbers(['1,000万'])&source_numbers(['1000 万','10,000,000']),{Decimal('10000000')})
-        blank='观察日 2024-03-20 10:00:00，年份 2024 年，材料 T1 N2 D3 M1 F1，近 5 日，近5个交易日，参数 (12,26,9)。'
+        self.assertIn((Decimal('10000000'),'shares'),got)
+        self.assertIn((Decimal('150000000'),'unitless'),got)
+        self.assertIn((Decimal('0.125'),'percent'),got)
+        self.assertEqual(source_numbers(['1,000万'])&source_numbers(['1000 万','10,000,000']),{(Decimal('10000000'),'unitless')})
+        blank='观察日 2024-03-20 10:00:00，年份 2024 年，材料 T1 N2 D3 M1 F1，近 5 日，近5个交易日，MACD(12,26,9)。'
         self.assertEqual(source_numbers([blank]),set())
-        self.assertIn(Decimal('20240000'),source_numbers(['金额 2024万元']))
+        self.assertEqual(source_numbers(['参数 (12,26,9)','(1,2,3)']),{(Decimal(n),'unitless') for n in ('12','26','9','1','2','3')})
+        self.assertEqual(source_numbers(['2001年','2024 年','macd(12,26,9)','EMA（12，26）','Boll(20,2)','kdj(9,3,3)']),set())
+        self.assertIn((Decimal('20240000'),'money'),source_numbers(['金额 2024万元']))
         self.assertEqual(source_numbers(None),set())
+        self.assertEqual(source_numbers(['1万股']),source_numbers(['10000股']))
+        self.assertEqual(source_numbers(['1亿元']),{(Decimal('100000000'),'money')})
+        self.assertEqual(source_numbers(['1万亿元']),{(Decimal('1000000000000'),'money')})
+        self.assertEqual(source_numbers(['12元股']),{(Decimal('12'),'shares')})
+        self.assertFalse(source_numbers(['123股'])&source_numbers(['123元']))
+        self.assertFalse(source_numbers(['12.5%'])&source_numbers(['12.5元','12.5']))
+        self.assertFalse(source_numbers(['3倍'])&source_numbers(['3点','3']))
+        self.assertFalse(source_numbers(['1万元'])&source_numbers(['1万']))
+        self.assertEqual(source_numbers(['+12.5%']),source_numbers(['12.5%']))
+        self.assertFalse(source_numbers(['-12.5%'])&source_numbers(['12.5%']))
+        self.assertEqual(source_numbers(['-12.5%']),source_numbers(['-12.5％']))
+        self.assertEqual(source_numbers(['+3倍']),source_numbers(['3倍']))
+        self.assertEqual(source_numbers(['2万']),{(Decimal('20000'),'unitless')})
+        self.assertIn((Decimal('2001'),'shares'),source_numbers(['增持 2001 股']))
+        self.assertIn((Decimal('2001'),'multiple'),source_numbers(['2001倍']))
+        self.assertIn((Decimal('2001'),'points'),source_numbers(['2001点']))
 
     def test_news_figure_is_kept_and_unsourced_figure_is_marked_without_dropping_the_item(self):
         evidence=[news_item()]
@@ -86,14 +104,18 @@ class NumberGateTests(unittest.TestCase):
         rich='财务栏写了 999 亿，本条只引用财务材料。'
         fai=report({'watch':[{'text':rich,'evidence':['F1']}]})
         self.assertEqual(gate_ai_report(fai,financial)['watch'][0]['text'],rich)
-        both=report({'overview':[{'text':'标题为增持 1000 万，同时写了 RSI 70。','evidence':['N1','T1']}]})
-        mixed=gate_ai_report(both,[news_item(),technical[0]])['overview'][0]['text']
-        self.assertIn('1000 万',mixed)
-        self.assertNotIn('70',mixed)
+        both=report({'overview':[{'text':'标题为增持 1000 万股，同时写了 RSI 70，另称订单 5000 万元。','evidence':['N1','T1']}]})
+        mixed_evidence=[news_item(),{'id':'T1','title':'行情与技术指标','value':{'rsi14':70,'method':'MACD(12,26,9)'},'source':'程序'}]
+        mixed=gate_ai_report(both,mixed_evidence)['overview'][0]['text']
+        self.assertIn('1000 万股',mixed)
+        self.assertIn('RSI 70',mixed)
+        self.assertNotIn('5000',mixed)
         self.assertIn(MARK,mixed)
         plain='观察日 2024-03-20，近 5 日，材料 N1，参数 (12,26,9)，2024年回顾。'
-        dated=gate_ai_report(report({'overview':[{'text':plain,'evidence':['N1']}]}),[news_item('公司签署日常经营合同')])
-        self.assertEqual(dated['overview'][0]['text'],plain)
+        dated=gate_ai_report(report({'overview':[{'text':plain,'evidence':['N1']}]}),[news_item('公司签署日常经营合同')])['overview'][0]['text']
+        self.assertEqual(dated,'观察日 2024-03-20，近 5 日，材料 N1，参数 (（略※）,（略※）,（略※）)，2024年回顾。'+NOTE)
+        anchored='回顾 MACD(12,26,9)，以及 2001年，没有别的数字。'
+        self.assertEqual(gate_ai_report(report({'overview':[{'text':anchored,'evidence':['N1']}]}),[news_item('公司签署日常经营合同')])['overview'][0]['text'],anchored)
         limits=[{'id':'M1','title':'材料范围与缺失项','value':['新闻得到 10 条；缺失日未填补。'],'source':'观市数据检查'}]
         limited=gate_ai_report(report({'overview':[{'text':'材料写明 10 条，不能写成 99。','evidence':['M1']}]}),limits)['overview'][0]['text']
         self.assertIn('10 条',limited)
@@ -107,11 +129,81 @@ class NumberGateTests(unittest.TestCase):
         disclosed=gate_ai_report(report({'overview':[{'text':'披露写营收 12.5 亿元，没有 8.8 亿。','evidence':['D1']}]}),disclosure)['overview'][0]['text']
         self.assertIn('12.5 亿元',disclosed)
         self.assertNotIn('8.8',disclosed)
-        shared=gate_ai_report(report({'overview':[{'text':'增持 1000 万见 N1 或 D1。','evidence':['N1','D1']}]}),[news_item(),{'id':'D1','title':'无数字','value':'无数字','source':'披露'}])
+        shared=gate_ai_report(report({'overview':[{'text':'增持 1000 万股见 N1 或 D1。','evidence':['N1','D1']}]}),[news_item(),{'id':'D1','title':'无数字','value':'无数字','source':'披露'}])
         self.assertNotIn(MARK,shared['overview'][0]['text'])
         bare=gate_ai_report(report({'overview':[{'text':'只写了 1000，没有单位。','evidence':['N1']}]}),[news_item()])['overview'][0]['text']
         self.assertNotIn('1000',bare.split('（文中',1)[0])
         self.assertIn(MARK,bare)
+
+    def test_same_dimension_scales_match_and_cross_dimension_is_masked(self):
+        evidence=[news_item('增持 1 万股，金额 2 万元，跌幅 -12.5%，估值 3 倍')]
+        kept=gate_ai_report(report({'overview':[{'text':'增持 10000 股，金额 20000 元，跌幅 -12.5％，估值 3 倍。','evidence':['N1']}]}),evidence)
+        self.assertNotIn(MARK,kept['overview'][0]['text'])
+        crossed=gate_ai_report(report({'supporting':[{'text':'增持 10000 元，跌幅 12.5%，估值 3 点，裸数 3。','evidence':['N1']}]}),evidence)['supporting'][0]['text']
+        body,note=crossed.split('（文中',1)
+        self.assertNotIn('10000',body)
+        self.assertNotIn('12.5%',body)
+        self.assertNotIn('3 点',body)
+        self.assertNotIn('裸数 3',body)
+        self.assertEqual(body.count(MARK),4)
+        self.assertEqual(note.count('未整段丢弃本条'),1)
+
+    def test_year_needs_context_and_parameter_groups_need_an_indicator(self):
+        quiet=[news_item('公司签署日常经营合同')]
+        bare='2001年回顾，增持 2001 股，放大 2001 倍，上行 2001 点，MACD(12,26,9) 仍保留。'
+        masked=gate_ai_report(report({'overview':[{'text':bare,'evidence':['N1']}]}),quiet)['overview'][0]['text']
+        self.assertEqual(masked,'2001年回顾，增持 （略※），放大 （略※），上行 （略※），MACD(12,26,9) 仍保留。'+NOTE)
+        sourced=[news_item('增持 2001 股')]
+        kept=gate_ai_report(report({'watch':[{'text':bare,'evidence':['N1']}]}),sourced)['watch'][0]['text']
+        self.assertEqual(kept,'2001年回顾，增持 2001 股，放大 （略※），上行 （略※），MACD(12,26,9) 仍保留。'+NOTE)
+        self.assertIn('2001年',kept)
+        self.assertIn('2001 股',kept)
+        self.assertNotIn('2001 倍',kept)
+        self.assertNotIn('2001 点',kept)
+
+    def test_mixed_technical_or_financial_numbers_stay_when_news_is_also_cited(self):
+        technical={'id':'T1','title':'行情与技术指标','value':{'rsi14':100,'method':'MACD(12,26,9)'},'source':'程序'}
+        news=news_item('公司公告增持 1000 万股')
+        news['value']['url']='https://example.com/n/987654321'
+        prose='RSI 100，标题增持 1000 万股，新闻另写订单 5000 万元。'
+        out=gate_ai_report(report({'overview':[{'text':prose,'evidence':['N1','T1']}]}),[news,technical])['overview'][0]['text']
+        self.assertIn('RSI 100',out)
+        self.assertIn('1000 万股',out)
+        self.assertNotIn('5000',out)
+        self.assertIn(MARK,out)
+        self.assertEqual(out.count('未整段丢弃本条'),1)
+        financial={'id':'F1','title':'财务指标','value':{'items':[{'label':'净资产收益率','value':'8.5%'}]},'source':'财务'}
+        disclosure={'id':'D1','title':'年度报告','value':{'title':'年度报告','content':'营业收入 12.5 亿元','url':'https://example.com/987654321.pdf','stock_code':'600487','notice_date':'2024-04-20','sha256':'abc987654321'},'source':'披露'}
+        line='披露营业收入 12.5 亿元，财务净资产收益率 8.5%，另有无出处的 77 亿元。'
+        mixed=gate_ai_report(report({'watch':[{'text':line,'evidence':['D1','F1']}]}),[disclosure,financial])['watch'][0]['text']
+        self.assertIn('12.5 亿元',mixed)
+        self.assertIn('8.5%',mixed)
+        self.assertNotIn('77',mixed)
+        self.assertNotIn('987654321',mixed)
+        self.assertIn(MARK,mixed)
+        only_t='RSI 100，但不能因此放过新闻里的 5000 万元。'
+        self.assertEqual(gate_ai_report(report({'opposing':[{'text':only_t,'evidence':['T1']}]}),[technical])['opposing'][0]['text'],only_t)
+
+    def test_news_and_disclosure_metadata_is_not_a_number_source(self):
+        news={'id':'N1','title':'增持 1000 万股','value':{'time':'2026-03-20 10:00:00','title':'增持 1000 万股','url':'https://example.com/n/987654321','source':'示例987654321'},'source':'东方财富按代码检索'}
+        doc={'id':'ann-1','stock_code':'600487','stock_name':'示例','period_end':'2024-12-31','title':'营收 12.5 亿元','document_kind':'annual_report','url':'https://static.cninfo.com.cn/finalpage/2024-04-20/987654321.PDF','notice_date':'2024-04-20','available_at':'2024-04-20T16:00:00+08:00','fetched_at':'2024-04-21T08:00:00+08:00','index_fetched_at':'2024-04-21T08:00:00+08:00','sha256':'0123456789abcdef9876543210','published_precision':'day','notice_date_basis':'index','pdf_path':'documents/987654321.pdf','content':'正文：净利润 3.2 亿元。'}
+        disclosure={'id':'D1','title':'营收 12.5 亿元','value':doc,'source':'巨潮官方公告索引及已核验原文 / 本机资料库'}
+        prose='标题增持 1000 万股。营收 12.5 亿元，净利润 3.2 亿元。不能写成营业收入 987654321 元，也不能单写 987654321 或代码 600487。'
+        out=gate_ai_report(report({'overview':[{'text':prose,'evidence':['N1','D1']}]}),[news,disclosure])['overview'][0]['text']
+        self.assertIn('1000 万股',out)
+        self.assertIn('12.5 亿元',out)
+        self.assertIn('3.2 亿元',out)
+        self.assertNotIn('987654321',out)
+        self.assertNotIn('600487',out)
+        self.assertIn(MARK,out)
+        nested={'id':'N2','title':'无数字标题','value':{'url':'https://example.com/987654321','summary':{'title':'订单 42 万股','url':'https://cdn.example/555666777','sha256':'555666777'}},'source':'合成'}
+        body=gate_ai_report(report({'supporting':[{'text':'订单 42 万股，附件 555666777。','evidence':['N2']}]}),[nested])['supporting'][0]['text']
+        self.assertIn('42 万股',body)
+        self.assertNotIn('555666777',body)
+        literal={'id':'D2','title':'简讯','value':'公告称派息 0.5 元','source':'披露'}
+        text=gate_ai_report(report({'opposing':[{'text':'公告称派息 0.5 元，不是 9 元。','evidence':['D2']}]}),[literal])['opposing'][0]['text']
+        self.assertIn('0.5 元',text)
+        self.assertNotIn('9 元',text)
 
     def test_prompt_version_and_system_text_stay_put(self):
         self.assertEqual(PROMPT_VERSION,'guanshi-research-1')
@@ -148,6 +240,7 @@ class NumberGateTests(unittest.TestCase):
             self.assertEqual(done['report']['prompt_version'],PROMPT_VERSION)
             self.assertIn('1000 万',ai['overview'][0]['text'])
             self.assertNotIn(MARK,ai['overview'][0]['text'])
+            self.assertEqual(done['report']['number_gate'],{'status':'masked'})
             self.assertEqual(ai['overview'][0]['evidence'],['N1'])
             self.assertNotIn('2000',ai['supporting'][0]['text'])
             self.assertIn(MARK,ai['supporting'][0]['text'])
@@ -161,6 +254,7 @@ class NumberGateTests(unittest.TestCase):
             self.assertEqual(gate_ai_report(checked,[{'id':'T1','title':'指标','value':{'rsi14':12.3},'source':'程序'}]),checked)
             saved=self.run_ai(self.engine(tmp,pure),'technical-only')
             self.assertEqual(saved['status'],'complete')
+            self.assertEqual(saved['report']['number_gate'],{'status':'clean'})
             for key in KEYS:
                 self.assertEqual(saved['report']['ai'][key][0]['text'],technical)
             broken=self.engine(tmp,'不是 JSON')
@@ -171,5 +265,27 @@ class NumberGateTests(unittest.TestCase):
                 fallback=self.run_ai(self.engine(tmp,reply),'fallback')
             self.assertEqual(fallback['status'],'complete')
             self.assertIsNone(fallback['error'])
+            self.assertEqual(fallback['report']['number_gate'],{'status':'failed'})
             self.assertIn('2000 万',fallback['report']['ai']['supporting'][0]['text'])
             self.assertNotIn(MARK,json.dumps(fallback['report']['ai'],ensure_ascii=False))
+            saved_blob=json.dumps(fallback,ensure_ascii=False)
+            self.assertNotIn('boom',saved_blob)
+            self.assertNotIn('RuntimeError',saved_blob)
+            self.assertNotIn('Traceback',saved_blob)
+            page=Path('web/analysis.js').read_text()
+            self.assertIn('数字核验未完成',page)
+            self.assertIn('旧报告未做数字核验',page)
+            self.assertIn("gateStatus==='failed'",page)
+            self.assertIn("gateStatus==='skipped'",page)
+            self.assertIn("gateStatus==='masked'",page)
+            self.assertIn("let gateNote=''",page)
+            self.assertLess(page.index("gateStatus==='failed'"),page.index("gateStatus==='masked'"))
+            self.assertLess(page.index("gateStatus==='masked'"),page.index('旧报告未做数字核验'))
+            legacy=self.engine(tmp,reply)
+            old_payload={'name':'测试','code':'600487.SH','date':'2026-03-21','ai':{key:[{'text':'旧文本没有闸门状态。','evidence':['T1']}] for key in KEYS}}
+            with legacy.db() as db:
+                db.execute('INSERT INTO reports VALUES (?,?,?,?,?,?,?,?)',
+                           ('legacy','600487.SH','2026-03-21','2026-03-21T16:00:00+08:00','complete','分析完成',json.dumps(old_payload,ensure_ascii=False),None))
+            loaded=legacy.get('legacy')
+            self.assertNotIn('number_gate',loaded['report'])
+            self.assertEqual(loaded['report']['ai']['overview'][0]['text'],'旧文本没有闸门状态。')

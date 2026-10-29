@@ -7,7 +7,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from market import DataError, TZ, today
-from number_gate import gate_ai_report
+from number_gate import MARK, gate_ai_report
 from rankings import finite
 
 PROMPT_VERSION='guanshi-research-1'
@@ -45,6 +45,16 @@ def technical(rows):
         values['trend']='均线多头排列' if a>b>d else '均线空头排列' if a<b<d else '均线交错'
     values['method']='前复权日 K；只使用截至观察日连续有效收盘价。RSI14 使用 Wilder 平滑；MACD(12,26,9) 至少 60 个连续样本，EMA 从窗口首价初始化；成交量对比前 5 日均量，不是盘中量比。'
     return values
+
+
+def _number_gate_status(ai):
+    if not isinstance(ai,dict):return 'clean'
+    for key in ('overview','supporting','opposing','watch'):
+        rows=ai.get(key)
+        if not isinstance(rows,list):continue
+        for row in rows:
+            if isinstance(row,dict) and isinstance(row.get('text'),str) and MARK in row['text']:return 'masked'
+    return 'clean'
 
 
 def has_usable_technical(values):
@@ -207,9 +217,14 @@ class Analysis:
             result=self.model.complete([{'role':'system','content':system},{'role':'user','content':json.dumps(materials,ensure_ascii=False)}],config=config)
             validated=validate_report(result,{r['id'] for r in payload['evidence']})
             try:
-                payload['ai']=gate_ai_report(validated,payload['evidence'])
+                gated=gate_ai_report(validated,payload['evidence'])
+                gate_status=_number_gate_status(gated)
             except Exception:
                 payload['ai']=validated
+                payload['number_gate']={'status':'failed'}
+            else:
+                payload['ai']=gated
+                payload['number_gate']={'status':gate_status}
             payload['completed_at']=dt.datetime.now(TZ).isoformat()
             self.update(identifier,'分析完成','complete',payload)
         except DataError as e:self.update(identifier,'解读未完成，已取得的材料保留','partial',payload,error=str(e))

@@ -68,7 +68,16 @@ test('analysis render places the disclosure before the price section', () => {
   assert.ok(render.indexOf('综合解读') < render.indexOf('${aiNote}'));
   assert.ok(render.includes('${aiNote}${gateNote}${sections}'));
   assert.ok(render.includes('（略※）表示数字未在所引新闻/披露中核到出处'));
+  assert.ok(render.includes('数字核验未完成'));
+  assert.ok(render.includes('旧报告未做数字核验'));
+  assert.ok(render.includes("gateStatus==='failed'||gateStatus==='skipped'"));
+  assert.ok(render.includes("gateStatus==='masked'||gateHit"));
+  assert.ok(render.includes('!gateStatus&&p.ai'));
+  assert.ok(render.includes("let gateNote=''"));
   assert.ok(render.indexOf('gateHit') < render.indexOf('gateNote'));
+  assert.ok(render.indexOf("let gateNote=''") < render.indexOf("gateStatus==='failed'"));
+  assert.ok(render.indexOf("gateStatus==='failed'") < render.indexOf("gateStatus==='masked'"));
+  assert.ok(render.indexOf("gateStatus==='masked'") < render.indexOf('旧报告未做数字核验'));
   assert.match(render, /证据类型只说明材料来自哪里，不代表该推断已被验证，也不是概率。/);
   assert.match(render, /kindTagHTML/);
   assert.match(render, /limitationItems/);

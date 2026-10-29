@@ -4,10 +4,11 @@
   Analysis.get(id) → report_compare.build_delta(analysis, row) → payload/delta
   web/analysis.js render(d) → 渲染 d.delta
 
-不改指标计算、不碰批次/缠论。
+视图层可附加 kind / notices / process。不改 compare_reports 的输出，不改指标计算。
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 from typing import Optional
 
@@ -15,7 +16,8 @@ from analysis import has_usable_technical
 from compare import compare_reports, choose_baseline, COMPARE_VERSION  # noqa: F401
 
 __all__ = ["build_delta", "compare_reports", "choose_baseline", "COMPARE_VERSION",
-           "delta_view", "DEFAULT_METRIC_ORDER"]
+           "delta_view", "DEFAULT_METRIC_ORDER", "notice_view", "process_view",
+           "MARK_INCOMPARABLE", "MARK_PROMPT", "PROCESS_NOTE", "BACKFILL_NOTE"]
 
 
 DEFAULT_METRIC_ORDER = (
@@ -29,27 +31,477 @@ METRIC_LABELS = {
     "rsi14": "RSI14", "macd_hist": "MACD柱值", "sample": "有效样本数",
 }
 
+# 红绿只留给收盘价和涨跌幅。均线、MACD 虽是价格单位，视图上仍算指标。
+_PRICE_METRICS = frozenset({"close", "change1", "change20"})
+_VOLUME_METRICS = frozenset({"volume_ratio5"})
+_COUNT_METRICS = frozenset({"sample"})
+
+_SH = dt.timezone(dt.timedelta(hours=8))
+MISSING = "未记录"
+MARK_INCOMPARABLE = "与本次不可比"
+MARK_PROMPT = "AI 文本口径不同"
+PROCESS_NOTE = "只比较方法与取数范围，不比较结果好坏。"
+BACKFILL_NOTE = "基线可能是事后补做，不能当作当时可知信息。"
+PROCESS_ROWS = (
+    {"key": "method", "label": "方法"},
+    {"key": "window", "label": "窗口"},
+    {"key": "sample", "label": "样本"},
+    {"key": "ai", "label": "是否含 AI"},
+    {"key": "backfilled", "label": "是否事后补做"},
+    {"key": "prompt_version", "label": "prompt_version"},
+)
+
+
+def _metric_class(key: str) -> str:
+    if key in _PRICE_METRICS:
+        return "price"
+    if key in _VOLUME_METRICS:
+        return "volume"
+    if key in _COUNT_METRICS:
+        return "count"
+    return "indicator"
+
+
+def _row_kind(d: dict, hide: bool) -> tuple[str, str]:
+    """视图类型。None 保持缺失，不转成 0。"""
+    old, new, diff = d.get("old"), d.get("new"), d.get("diff")
+    direction = d.get("direction")
+    if direction == "window_sensitive":
+        return "incomparable", "窗口不同"
+    # 双方都没有值时先保住“不补零”，即使整份报告被标成不可比。
+    if direction == "both_missing" or (old is None and new is None):
+        return "both_missing", "双方缺失"
+    if hide or direction == "not_comparable":
+        return "incomparable", "不可比"
+    if old is None and new is not None:
+        return "added", "新增"
+    if old is not None and new is None:
+        return "removed", "消失"
+    if diff == 0 or old == new:
+        return "unchanged", "没变"
+    return "changed", "变了"
+
 
 def _payload_from_row(row: dict) -> dict:
-    """Analysis.get 返回行 → compare 所需 payload。"""
+    """Analysis.get 返回行 → compare 所需 payload。缺 disclosures 时给 None，不报错。"""
     report = row.get("report")
     if report is None:
-        report = json.loads(row.get("payload") or "{}") if isinstance(row.get("payload"), str) else (row.get("payload") or {})
+        raw = row.get("payload")
+        if isinstance(raw, str):
+            try:
+                report = json.loads(raw or "{}")
+            except (ValueError, TypeError):
+                report = {}
+        else:
+            report = raw or {}
+    if not isinstance(report, dict):
+        report = {}
+    disclosures = report.get("disclosures")
     return {
-        "code": row.get("code"),
+        "code": row.get("code") or report.get("code"),
         "date": row.get("day") or report.get("date"),
         "generated_at": report.get("generated_at") or row.get("created"),
         "prompt_version": report.get("prompt_version"),
         "technical": report.get("technical") or {},
         "assessment": report.get("assessment"),
         "ai": report.get("ai"),
+        "model": report.get("model"),
+        "disclosures": disclosures if isinstance(disclosures, dict) else None,
     }
+
+
+# 明确不可比的披露状态：缺字段/失败/未配置等都不能当成「清单为空」。
+_DISCLOSURE_UNKNOWN = frozenset({
+    "failed", "unconfigured", "uncovered", "period_not_covered",
+    "not_yet_available", "unavailable", "invalid",
+})
+
+
+def _disclosure_items(payload) -> list:
+    if not isinstance(payload, dict):
+        return []
+    block = payload.get("disclosures")
+    if not isinstance(block, dict):
+        return []
+    items = block.get("items")
+    if not isinstance(items, list):
+        return []
+    rows = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        ident = item.get("id")
+        if isinstance(ident, bool) or ident is None:
+            continue
+        if isinstance(ident, (int, str)):
+            text = str(ident).strip()
+            if text:
+                rows.append((text, item))
+    return rows
+
+
+def _disclosure_list_state(payload):
+    """Distinguish a comparable material list from unknown / failed / absent.
+
+    Returns (ok, reason, items, period_end).
+    ok=True only when this side has a usable saved material inventory.
+    Legacy payloads with a list under disclosures.items and no status still count.
+    """
+    if not isinstance(payload, dict):
+        return False, "无更早报告可作材料清单对比。", [], None
+    if "disclosures" not in payload:
+        return False, "披露资料未采集或未知，不能判断材料清单增减。", [], None
+    block = payload.get("disclosures")
+    if block is None:
+        return False, "披露资料未采集或未知，不能判断材料清单增减。", [], None
+    if not isinstance(block, dict):
+        return False, "披露资料结构无效，不能判断材料清单增减。", [], None
+    status = block.get("status")
+    period = block.get("period_end") if isinstance(block.get("period_end"), str) else None
+    note = block.get("note") if isinstance(block.get("note"), str) else ""
+    if status in _DISCLOSURE_UNKNOWN:
+        label = {
+            "failed": "披露资料校验未通过",
+            "unconfigured": "本机尚未导入已核验披露资料",
+            "uncovered": "该股票尚未纳入本机已核验披露资料",
+            "period_not_covered": "该报告期尚未纳入本机已核验披露资料",
+            "not_yet_available": "截至观察日尚无可用的已核验披露材料",
+            "unavailable": "披露资料不可用",
+            "invalid": "披露资料无效",
+        }.get(status, "披露资料不可用")
+        reason = f"{label}，不能判断材料清单增减。"
+        if note.strip():
+            reason = f"{label}（{note.strip()}），不能判断材料清单增减。"
+        return False, reason, [], period
+    if "items" not in block or not isinstance(block.get("items"), list):
+        return False, "披露资料清单缺失或无效，不能判断材料清单增减。", [], period
+    if status not in (None, "available"):
+        return False, f"披露资料状态为 {status}，不能判断材料清单增减。", [], period
+    return True, "", _disclosure_items(payload), period
+
+
+def _notice_suppressed(reason: str, backfilled: bool = False) -> dict:
+    return {
+        "items": [],
+        "summary": reason,
+        "note": BACKFILL_NOTE if backfilled else "",
+        "comparable": False,
+        "reason": reason,
+    }
+
+
+def notice_view(old_payload, new_payload, backfilled: bool = False) -> dict:
+    """按公告 id 比较所存材料清单。只描述增减，不解释含义。
+
+    先确认两侧都有可比的资料清单且报告期一致；否则抑制新增/消失并保留原因。
+    无基线（首次分析）同样不证明公告刚新增。
+    """
+    old_ok, old_reason, old_items, old_period = _disclosure_list_state(old_payload)
+    new_ok, new_reason, new_items, new_period = _disclosure_list_state(new_payload)
+    if not isinstance(old_payload, dict):
+        return _notice_suppressed("无更早报告可作材料清单对比。", backfilled=backfilled)
+    if not old_ok and not new_ok:
+        # Prefer the current report's reason when both sides are unknown.
+        return _notice_suppressed(new_reason or old_reason, backfilled=backfilled)
+    if not old_ok:
+        return _notice_suppressed("此前报告：" + old_reason, backfilled=backfilled)
+    if not new_ok:
+        return _notice_suppressed("本次报告：" + new_reason, backfilled=backfilled)
+    if old_period and new_period and old_period != new_period:
+        return _notice_suppressed(
+            f"报告期不同（此前 {old_period}，本次 {new_period}），材料范围不可比，不判断清单增减。",
+            backfilled=backfilled,
+        )
+    old_by = {ident: item for ident, item in old_items}
+    new_by = {ident: item for ident, item in new_items}
+    rows = []
+    for ident in set(old_by) | set(new_by):
+        if ident in old_by and ident in new_by:
+            kind, label, src = "unchanged", "没变", new_by[ident]
+        elif ident in new_by:
+            kind, label, src = "added", "新增", new_by[ident]
+        else:
+            kind, label, src = "removed", "消失", old_by[ident]
+        title = src.get("title") if isinstance(src.get("title"), str) else ""
+        notice_date = src.get("notice_date") if isinstance(src.get("notice_date"), str) else ""
+        rows.append({
+            "id": ident, "title": title, "kind": kind, "kind_label": label,
+            "notice_date": notice_date,
+        })
+    order = {"added": 0, "removed": 1, "unchanged": 2}
+    rows.sort(key=lambda r: (order.get(r["kind"], 9), r["notice_date"], r["id"]))
+    added = sum(r["kind"] == "added" for r in rows)
+    removed = sum(r["kind"] == "removed" for r in rows)
+    same = sum(r["kind"] == "unchanged" for r in rows)
+    summary = (f"所存材料清单的变化：新增 {added} 项，消失 {removed} 项，没变 {same} 项。"
+               "只记录材料清单的增减，不判断利好或利空。")
+    return {
+        "items": rows,
+        "summary": summary,
+        "note": BACKFILL_NOTE if backfilled else "",
+        "comparable": True,
+        "reason": "",
+    }
+
+
+def _text(value) -> str:
+    return value if isinstance(value, str) and value else ""
+
+
+def _report_of(item) -> dict:
+    if isinstance(item, dict) and isinstance(item.get("report"), dict):
+        return item["report"]
+    return {}
+
+
+def _code_of(item) -> str:
+    if not isinstance(item, dict):
+        return ""
+    code = item.get("code")
+    if isinstance(code, str) and code:
+        return code
+    return _text(_report_of(item).get("code"))
+
+
+def _day_of(item) -> str:
+    if not isinstance(item, dict):
+        return ""
+    day = item.get("day")
+    if isinstance(day, str) and day:
+        return day
+    return _text(_report_of(item).get("date"))
+
+
+def _created_of(item) -> str:
+    if isinstance(item, dict) and isinstance(item.get("created"), str):
+        return item["created"]
+    return ""
+
+
+def _shanghai_day(value) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        when = dt.datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            return dt.date.fromisoformat(text[:10]).isoformat() if len(text) >= 10 else None
+        except ValueError:
+            return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=_SH)
+    else:
+        when = when.astimezone(_SH)
+    return when.date().isoformat()
+
+
+def _window_parts(assessment) -> tuple[Optional[str], Optional[str]]:
+    if not isinstance(assessment, dict):
+        return None, None
+    rule = assessment.get("rule_version")
+    rule_text = rule.strip() if isinstance(rule, str) and rule.strip() else None
+    window = assessment.get("window")
+    meta = assessment.get("meta") if isinstance(assessment.get("meta"), dict) else {}
+    if window is None:
+        window = meta.get("window")
+    context = meta.get("context") if isinstance(meta.get("context"), dict) else {}
+    if window is None:
+        window = context.get("window")
+    if isinstance(window, bool) or window is None:
+        shown = None
+    elif isinstance(window, int):
+        shown = str(window)
+    elif isinstance(window, float) and window == window and window not in (float("inf"), float("-inf")):
+        shown = str(int(window)) if window == int(window) else str(window)
+    elif isinstance(window, str) and window.strip():
+        shown = window.strip()
+    else:
+        shown = None
+    return shown, rule_text
+
+
+def _window_cell(assessment, current_assessment, is_current: bool) -> str:
+    window, rule = _window_parts(assessment)
+    if window is None and rule is None:
+        return MISSING
+    parts = [f"窗口 {window}" if window is not None else "窗口未记录",
+             f"规则 {rule}" if rule is not None else "规则未记录"]
+    text = " · ".join(parts)
+    if not is_current and rule is not None:
+        _, current_rule = _window_parts(current_assessment)
+        if current_rule is not None and current_rule != rule:
+            text += " · 规则版本与本次不同"
+    return text
+
+
+def _sample_cell(technical) -> str:
+    if not isinstance(technical, dict) or "sample" not in technical:
+        return MISSING
+    sample = technical.get("sample")
+    if isinstance(sample, bool) or not isinstance(sample, (int, float)):
+        return MISSING
+    if isinstance(sample, float) and (sample != sample or sample in (float("inf"), float("-inf"))):
+        return MISSING
+    if isinstance(sample, float):
+        return str(int(sample)) if sample == int(sample) else str(sample)
+    return str(sample)
+
+
+def _ai_cell(report: dict) -> str:
+    if "ai" not in report and "model" not in report:
+        return MISSING
+    ai = report.get("ai")
+    model = report.get("model")
+    if isinstance(ai, str):
+        ai_on = bool(ai.strip())
+    elif isinstance(ai, (dict, list)):
+        ai_on = bool(ai)
+    else:
+        ai_on = ai not in (None, False)
+    model_on = isinstance(model, str) and bool(model.strip())
+    return "含 AI" if ai_on or model_on else "不含 AI"
+
+
+def _backfill_cell(report: dict, day: str) -> str:
+    gen = report.get("generated_at") if isinstance(report, dict) else None
+    if not isinstance(gen, str) or not gen.strip():
+        return MISSING
+    generated = _shanghai_day(gen)
+    observed = day[:10] if isinstance(day, str) and len(day) >= 10 else ""
+    if not generated or not observed:
+        return MISSING
+    return "是" if generated > observed else "否"
+
+
+def _method_diff_summary(current: str, other: str) -> str:
+    """只摘差异附近的一小段，不把整段方法说明贴进表格。"""
+    limit = 24
+    index = 0
+    while index < len(current) and index < len(other) and current[index] == other[index]:
+        index += 1
+
+    def clip(text: str) -> str:
+        start = max(0, index - 4)
+        frag = text[start:start + limit]
+        prefix = "…" if start else ""
+        suffix = "…" if start + limit < len(text) else ""
+        return prefix + frag + suffix
+
+    return f"本次「{clip(current)}」该份「{clip(other)}」"
+
+
+def _method_cell(current_method: str, other_method: str, is_current: bool) -> str:
+    if is_current:
+        return "与本次相同" if current_method else MISSING
+    if not other_method:
+        return MISSING
+    if not current_method:
+        return "本次方法未记录"
+    if current_method == other_method:
+        return "与本次相同"
+    return "与本次不同：" + _method_diff_summary(current_method, other_method)
+
+
+def _eligible_process_item(item, code: str, day: str, created: str, current_id) -> bool:
+    if not isinstance(item, dict) or item.get("status") != "complete":
+        return False
+    if _code_of(item) != code:
+        return False
+    report = _report_of(item)
+    if not has_usable_technical(report.get("technical")):
+        return False
+    item_day = _day_of(item)
+    if not item_day or not day or item_day > day:
+        return False
+    if item_day == day and item.get("id") != current_id and _created_of(item) > created:
+        return False
+    return True
+
+
+def process_view(items, current_id) -> dict:
+    """同一股票、观察日不晚于当前的最近至多 4 份报告，并排看做法。
+
+    不排名、不打分。method 不同沿用 compare.py：整列标不可比。
+    prompt_version 不同只说明 AI 文本口径不同，不把整列标成不可比。
+    """
+    rows = [dict(item) for item in PROCESS_ROWS]
+    empty = {"note": PROCESS_NOTE, "columns": [], "rows": rows}
+    if not isinstance(items, list):
+        return empty
+    current = next((item for item in items if isinstance(item, dict) and item.get("id") == current_id), None)
+    if current is None:
+        return empty
+    code, day, created = _code_of(current), _day_of(current), _created_of(current)
+    if not _eligible_process_item(current, code, day, created, current_id):
+        return empty
+    eligible = [item for item in items if _eligible_process_item(item, code, day, created, current_id)]
+    # 同一 id 只留一条，避免重复列。
+    unique = []
+    seen = set()
+    for item in eligible:
+        ident = item.get("id")
+        if ident in seen:
+            continue
+        seen.add(ident)
+        unique.append(item)
+    unique.sort(key=lambda item: (_day_of(item), _created_of(item), str(item.get("id") or "")), reverse=True)
+    chosen = unique[:4]
+    if current_id not in {item.get("id") for item in chosen}:
+        chosen = chosen[:3] + [current]
+    chosen.sort(key=lambda item: (
+        _day_of(item), _created_of(item),
+        1 if item.get("id") == current_id else 0,
+        str(item.get("id") or ""),
+    ))
+
+    current_report = _report_of(current)
+    current_tech = current_report.get("technical") if isinstance(current_report.get("technical"), dict) else {}
+    current_method = _text(current_tech.get("method"))
+    current_prompt = current_report.get("prompt_version")
+    current_assessment = current_report.get("assessment")
+    columns = []
+    for item in chosen:
+        report = _report_of(item)
+        tech = report.get("technical") if isinstance(report.get("technical"), dict) else {}
+        is_current = item.get("id") == current_id
+        method = _text(tech.get("method"))
+        method_diff = (not is_current) and bool(current_method and method and current_method != method)
+        prompt_diff = (not is_current) and report.get("prompt_version") != current_prompt
+        marks = []
+        if method_diff:
+            marks.append(MARK_INCOMPARABLE)
+        if prompt_diff:
+            marks.append(MARK_PROMPT)
+        item_day = _day_of(item)
+        columns.append({
+            "id": "" if item.get("id") is None else str(item.get("id")),
+            "day": item_day or MISSING,
+            "current": bool(is_current),
+            "marks": marks,
+            "method_incomparable": method_diff,
+            "prompt_differs": prompt_diff,
+            "cells": {
+                "method": _method_cell(current_method, method, is_current),
+                "window": _window_cell(report.get("assessment"), current_assessment, is_current),
+                "sample": _sample_cell(tech),
+                "ai": _ai_cell(report),
+                "backfilled": _backfill_cell(report, item_day),
+                "prompt_version": _text(report.get("prompt_version")) or MISSING,
+            },
+        })
+    return {"note": PROCESS_NOTE, "columns": columns, "rows": rows}
 
 
 def build_delta(analysis, row: dict) -> Optional[dict]:
     """为单份报告附加 delta。返回展示结构（status_text/rows），raw 为完整对比结果。
 
     row: Analysis.get() 的返回 dict（含 code/day/report）
+    notices / process 失败时不拖垮原有对比。
     """
     code = row.get("code") or (row.get("report") or {}).get("code")
     day = row.get("day") or (row.get("report") or {}).get("date")
@@ -106,11 +558,21 @@ def build_delta(analysis, row: dict) -> Optional[dict]:
     if view is None:
         return None
     view["raw"] = raw
+    try:
+        backfilled = bool((raw.get("selection") or {}).get("backfilled_baseline"))
+        old_payload = _payload_from_row(baseline_row) if baseline_row else None
+        view["notices"] = notice_view(old_payload, current, backfilled=backfilled)
+    except Exception:
+        pass
+    try:
+        view["process"] = process_view(items, row.get("id"))
+    except Exception:
+        pass
     return view
 
 
 def delta_view(delta: Optional[dict], metric_order=DEFAULT_METRIC_ORDER) -> Optional[dict]:
-    """给前端的精简结构：状态文案 + 有序指标行。"""
+    """给前端的精简结构：状态文案 + 有序指标行。不改 compare 契约字段。"""
     if not delta:
         return None
     status = delta.get("status")
@@ -129,6 +591,7 @@ def delta_view(delta: Optional[dict], metric_order=DEFAULT_METRIC_ORDER) -> Opti
         hide = d.get("display") == "hidden_direction" or d.get("direction") in (
             "not_comparable", "window_sensitive",
         )
+        kind, kind_label = _row_kind(d, bool(hide))
         rows.append({
             "metric": key,
             "label": METRIC_LABELS.get(key, key),
@@ -140,6 +603,9 @@ def delta_view(delta: Optional[dict], metric_order=DEFAULT_METRIC_ORDER) -> Opti
             "display": d.get("display") or ("hidden_direction" if hide else "full"),
             "hide_direction": bool(hide),
             "note": d.get("note") or "",
+            "kind": kind,
+            "kind_label": kind_label,
+            "metric_class": _metric_class(key),
         })
     return {
         "status": status,

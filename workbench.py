@@ -22,7 +22,9 @@ def summary(tracking, analysis, day):
             t=payload.get('technical') or {}
             status='missing' if not report else 'running' if report['status']=='running' else 'incomplete' if report['status']!='complete' or not t.get('close') else 'outdated' if report['day']<day or t.get('asof')!=day else 'ready'
             ai=payload.get('ai') or {}
+            points=notes[0].get('watch_points')
             items.append({'thscode':code,'name':notes[0]['name'],'note':notes[0]['note'],
+                          'watch_points':points if isinstance(points, list) else [],
                           'observed':notes[0]['date'],'record_count':len(notes),'status':status,
                           'report':report,'technical':{k:t.get(k) for k in ('asof','close','trend','change20','change1','volume_ratio5','rsi14')},
                           'assessment':None if not payload.get('assessment') else {

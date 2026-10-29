@@ -110,6 +110,11 @@ class Analysis:
             from first_screen import attach_disclosure;attach_disclosure(d)
         except Exception:
             pass
+        try:
+            from reading_notes import invalidation_lines
+            d['reading_notes']=invalidation_lines(d.get('report') or {})
+        except Exception:
+            d['reading_notes']=[]
         return d
 
     def update(self,identifier,phase,status='running',payload=None,error=None):

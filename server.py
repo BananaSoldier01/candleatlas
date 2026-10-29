@@ -33,6 +33,7 @@ STATIC = {'/workbench.js': ('workbench.js', 'text/javascript'), '/chan.js': ('ch
 STATIC['/demo.js'] = ('demo.js', 'text/javascript')
 STATIC['/batch.js'] = ('batch.js', 'text/javascript')
 STATIC['/price-technical.js'] = ('price-technical.js', 'text/javascript')
+STATIC['/delta-display.js'] = ('delta-display.js', 'text/javascript')
 STATIC['/guide-content.js'] = ('guide-content.js', 'text/javascript')
 STATIC['/guide.js'] = ('guide.js', 'text/javascript')
 STATIC['/guide.css'] = ('guide.css', 'text/css')
@@ -180,7 +181,8 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == '/api/observations':
                 return self.send(200, self.server.tracking.list())
             if parsed.path == '/api/followup':
-                return self.send(200, followup(self.server.market,query.get('code',[''])[0],query.get('observed',[''])[0],query.get('date',[''])[0]))
+                oid=query.get('id',[''])[0]
+                return self.send(200, followup(self.server.market,query.get('code',[''])[0],query.get('observed',[''])[0],query.get('date',[''])[0],observation_id=oid or None,tracking=self.server.tracking if oid else None))
             if parsed.path == '/api/overview-dates':
                 dates=self.server.market.calendar()
                 return self.send(200, {'dates':[d for d in dates if self.server.rankings.read(d+'-market.json')]})

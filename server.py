@@ -179,7 +179,8 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == '/api/observations':
                 return self.send(200, self.server.tracking.list())
             if parsed.path == '/api/followup':
-                return self.send(200, followup(self.server.market,query.get('code',[''])[0],query.get('observed',[''])[0],query.get('date',[''])[0]))
+                oid=query.get('id',[''])[0]
+                return self.send(200, followup(self.server.market,query.get('code',[''])[0],query.get('observed',[''])[0],query.get('date',[''])[0],observation_id=oid or None,tracking=self.server.tracking if oid else None))
             if parsed.path == '/api/overview-dates':
                 dates=self.server.market.calendar()
                 return self.send(200, {'dates':[d for d in dates if self.server.rankings.read(d+'-market.json')]})

@@ -4,12 +4,28 @@ import math
 
 from analysis import technical
 from compare import compare_reports
+from reading_notes import invalidation_lines
 from report_compare import delta_view
 from tech_score import evaluate
+from watch_points import describe_point, validate_points
 from market import Market,DataError,TZ
 
 NOTICE='演示模式：全部数据由程序合成，非真实行情；不联网、不调用AI、不保存操作。'
 STOCKS=[dict(thscode='600000.SH',name='合成示例甲',asset_type='a-share'),dict(thscode='000001.SZ',name='合成示例乙',asset_type='a-share'),dict(thscode='920001.BJ',name='合成示例丙',asset_type='a-share')]
+
+
+def _labeled(points):
+    return [dict(point, label=describe_point(point)) for point in validate_points(points)]
+
+
+DEMO_POINTS=[
+    _labeled([
+        dict(id='wp-600000-ma',subject='收盘价 vs MA20',kind='metric',metric='close',op='>=',ref_metric='ma20',days=1),
+        dict(id='wp-600000-text',subject='下一份财报预约披露日',kind='text',source='巨潮公告索引/自行核对',note='合成文本观察，核对披露时点是否已公开。'),
+    ]),
+    _labeled([dict(id='wp-000001-rsi',subject='RSI14',kind='metric',metric='rsi14',op='>=',value=70,days=1)]),
+    _labeled([dict(id='wp-920001-vol',subject='较前5日均量',kind='metric',metric='volume_ratio5',op='>=',value=1.2,days=1)]),
+]
 
 
 class DemoMarket(Market):
@@ -59,12 +75,16 @@ class Demo:
         if i>0:
             old_day=self.market.dates[i-1];old=dict(p,date=old_day,technical=technical(self.market.prices(code,old_day,250)['items']))
         raw=compare_reports(old,p);view=delta_view(raw);view['raw']=raw
-        return dict(id='demo-'+code+'-'+day,code=code,day=day,created=p['generated_at'],status='complete',phase='合成技术样例 · 只读',report=p,error=None,delta=view)
+        return dict(id='demo-'+code+'-'+day,code=code,day=day,created=p['generated_at'],status='complete',phase='合成技术样例 · 只读',report=p,error=None,delta=view,reading_notes=invalidation_lines(p))
+    def observed(self,day):
+        dates=self.market.dates
+        if day not in dates:return day
+        return dates[max(0,dates.index(day)-20)]
     def records(self,day):
-        rows=[]
+        observed=self.observed(day);rows=[]
         for i,s in enumerate(STOCKS):
-            r=self.report(s['thscode'],day)
-            rows.append(dict(id='demo-record-'+str(i),**s,date=day,createdAt=day+'T16:00:00+08:00',note='合成关注理由：用于学习量价与指标，不代表真实持仓或建议。',active=True,report_id=r['id']))
+            r=self.report(s['thscode'],observed)
+            rows.append(dict(id='demo-record-'+str(i),**s,date=observed,createdAt=observed+'T16:00:00+08:00',note='合成关注理由：用于学习量价与指标，不代表真实持仓或建议。',active=True,report_id=r['id'],watch_points=DEMO_POINTS[i]))
         return rows
     def get(self,path,q):
         one=lambda k,default='':q.get(k,[default])[0]
@@ -88,10 +108,18 @@ class Demo:
             return dict(timestamp=int(dt.datetime.fromisoformat(day+'T15:00:00+08:00').timestamp()*1000),up=sum(r['price_change_ratio_pct']>0 for r in rows),down=sum(r['price_change_ratio_pct']<0 for r in rows),flat=sum(r['price_change_ratio_pct']==0 for r in rows),bins=bins,valid=3,received=3,universe=3,excluded=0,traded=3,turnover_sample=3,turnover=sum(r['turnover']for r in rows),leaders=rows,note=NOTICE)
         if path=='/api/rankings':return dict(date=day,source_date=day,source='程序合成示例',items=[dict(r,rank=i+1,heat=3000-i*450,rank_change=0)for i,r in enumerate(self.quotes(day))],total=3,limit=int(one('limit','10')),offset=0,note=NOTICE)
         if path=='/api/observations':return dict(items=self.records(self.day))
+        if path=='/api/followup':
+            from tracking import followup
+            code=one('code');observed=one('observed');end=one('date',self.day);oid=one('id','')
+            class _records:
+                def __init__(self,items):self.items=items
+                def list(self):return dict(items=self.items)
+            return followup(self.market,code,observed,end,observation_id=oid or None,tracking=_records(self.records(self.day)) if oid else None)
         if path=='/api/workbench':
-            items=[]
+            items=[];recs={r['thscode']:r for r in self.records(day if day in self.market.dates else self.day)}
             for s in STOCKS:
-                r=self.report(s['thscode'],day);p=r['report'];items.append(dict(s,note='合成研究记录，用于体验工作台。',observed=day,record_count=1,status='ready',report={k:r[k]for k in('id','day','created','status','phase','error')},technical=p['technical'],assessment=p['assessment'],overview=[],watch=[],has_ai=False,limitations=p['limitations']))
+                r=self.report(s['thscode'],day);p=r['report'];rec=recs.get(s['thscode'],{})
+                items.append(dict(s,note=rec.get('note') or '合成研究记录，用于体验工作台。',observed=rec.get('date') or day,record_count=1,status='ready',report={k:r[k]for k in('id','day','created','status','phase','error')},technical=p['technical'],assessment=p['assessment'],overview=[],watch=[],has_ai=False,limitations=p['limitations'],watch_points=rec.get('watch_points') or []))
             return dict(date=day,items=items,counts=dict(stocks=3,ready=3,pending=0,records=3),future_records=0)
         if path=='/api/analysis-history':return dict(items=[{k:r[k]for k in('id','code','day','created','status','phase','error')}for r in [self.report(code,day)]])
         if path=='/api/analysis':

@@ -135,6 +135,12 @@ Node.js 仅用于开发测试，运行应用不需要 Node，开发建议使用 
 
 </details>
 
+## 可选：指数官方文件（默认不联网）
+
+`index_official.py` 提供只读函数 `fetch_constituents`、`fetch_weights`、`fetch_valuation`，用来对照一只指数在官方文件里的成分、权重和估值列。入口是中证指数（csindex 的 cons / closeweight / indicator 文件）或国证指数（cnindex 的样本导出与估值文件）。调用方要显式选择来源；一次只读那一条路径。
+
+默认 `allow_network=False`。没有传入文件字节时只返回缺口，不会在同花顺失败后自动改走这里。成分数量、权重和文件日期用于教学对照。指数点位与估值字段不是买卖建议，模块也不做个股估值筛选。官方文件的再分发和商用条款未审，程序许可不含数据再分发权，维护者复核前不要联网拉取或把结果放进发行包。详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 ## 许可与来源
 
 项目自身代码采用 [MIT](LICENSE)。第三方许可和数据来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。源码许可不包含外部行情、公告 PDF 或其他内容的再分发权。

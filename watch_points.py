@@ -74,11 +74,30 @@ def review_phrase(item):
         return f"已出现（首次 {day}，当日取值 {_num_text(item.get('value_at_first_seen'))}）"
     if status=='not_appeared':
         return f"未出现（已核对 {int(item.get('checked_days') or 0)} 个交易日）"
+    if status=='intraday':
+        return '盘中未定稿'
     if status=='pending':
         return '尚未到期'
     if status=='manual':
         return '需自行核对'
     return '数据缺失'
+
+
+def provisional_bar_date(as_of, now=None):
+    """Return as_of when that Shanghai day is still an unfinalized session bar.
+
+    Matches the price-grid rule in tracking.followup: same calendar day as `now`
+    and local hour before 16:00. Historical as_of values are never provisional.
+    """
+    from market import TZ
+    if now is None:
+        now=dt.datetime.now(TZ)
+    if not isinstance(as_of, str) or not isinstance(now, dt.datetime):
+        return None
+    local=now.astimezone(TZ) if now.tzinfo else now.replace(tzinfo=TZ)
+    if as_of==local.date().isoformat() and local.hour < 16:
+        return as_of
+    return None
 
 
 def validate_points(raw):
@@ -182,12 +201,17 @@ def _finish(point, status, checked, first, value):
     return item
 
 
-def review_points(prices_rows, observed, end, points, calendar, as_of=None):
+def review_points(prices_rows, observed, end, points, calendar, as_of=None, now=None):
     """Whether each condition showed up after the observation day.
 
     For day d, only bars on or before d are used. Calendar days without a bar stay
     empty; they are not filled from a neighbouring close. Missing data is not
     treated as the condition failing.
+
+    An unfinalized same-day bar (Shanghai session before 16:00, same rule as the
+    price grid) never advances a confirmed streak and never yields appeared or
+    not_appeared. Earlier finalized hits stay appeared; otherwise the status is
+    intraday until the bar is final.
     """
     if not isinstance(points, list):
         raise DataError('观察点格式无效。')
@@ -198,6 +222,7 @@ def review_points(prices_rows, observed, end, points, calendar, as_of=None):
     if not isinstance(observed, str) or not isinstance(end, str) or not isinstance(as_of, str):
         raise DataError('观察日期无效。')
     cap=end if end<=as_of else as_of
+    unsettled=provisional_bar_date(as_of, now=now)
     days=[]
     for day in sorted(d for d in calendar if isinstance(d, str)):
         if day<=cap and day not in days:
@@ -218,6 +243,7 @@ def review_points(prices_rows, observed, end, points, calendar, as_of=None):
             aligned.append(blank)
     index={row['date']:i for i, row in enumerate(aligned)}
     horizon=[day for day in days if observed<day<=cap]
+    pending_intraday=bool(unsettled and unsettled in horizon)
     cache={}
 
     def tech_on(day):
@@ -240,6 +266,9 @@ def review_points(prices_rows, observed, end, points, calendar, as_of=None):
         missing=False
         first=value=None
         for day in horizon:
+            if pending_intraday and day==unsettled:
+                # Unfinalized bar: do not confirm appeared / not_appeared from it.
+                break
             if day not in index:
                 missing=True
                 streak=0
@@ -261,6 +290,8 @@ def review_points(prices_rows, observed, end, points, calendar, as_of=None):
             status='appeared'
         elif not horizon:
             status='pending'
+        elif pending_intraday:
+            status='intraday'
         elif missing:
             status='data_missing'
         else:

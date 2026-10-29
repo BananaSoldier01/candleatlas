@@ -78,6 +78,21 @@ class Tracking:
 
 def followup(market, code, observed, end, observation_id=None, tracking=None):
     if not re.fullmatch(r'\d{6}\.(SH|SZ|BJ)', code): raise DataError('股票代码无效。')
+    points=None
+    if observation_id:
+        if tracking is None:
+            raise DataError('未找到观察记录。')
+        found=next((row for row in tracking.list().get('items') or [] if isinstance(row, dict) and row.get('id')==observation_id), None)
+        if found is None:
+            raise DataError('观察记录不存在。')
+        if found.get('thscode')!=code:
+            raise DataError('观察记录与股票不一致。')
+        saved=found.get('date')
+        if not isinstance(saved, str) or not saved:
+            raise DataError('观察记录日期无效。')
+        # Saved observation day is the sole authority for price grid and conditions.
+        observed=saved
+        points=found.get('watch_points') if isinstance(found.get('watch_points'), list) else []
     dates = market.calendar()
     if observed not in dates or end not in dates: raise DataError('观察日或回看日不是可用交易日。')
     base = dates.index(observed)
@@ -100,7 +115,7 @@ def followup(market, code, observed, end, observation_id=None, tracking=None):
     result={'items':items,'baseline':baseline,'observed':observed,'end':end}
     if not observation_id:
         return result
-    return _attach_review(result, market, code, observed, end, dates, observation_id, tracking)
+    return _attach_review(result, market, code, observed, end, dates, points)
 
 
 def _present_points(raw):
@@ -147,15 +162,7 @@ def load_forward_rows(market, code, end, lookback=250):
     return rows
 
 
-def _attach_review(result, market, code, observed, end, dates, observation_id, tracking):
-    if tracking is None:
-        raise DataError('未找到观察记录。')
-    found=next((row for row in tracking.list().get('items') or [] if isinstance(row, dict) and row.get('id')==observation_id), None)
-    if found is None:
-        raise DataError('观察记录不存在。')
-    if found.get('thscode')!=code:
-        raise DataError('观察记录与股票不一致。')
-    points=found.get('watch_points') if isinstance(found.get('watch_points'), list) else []
+def _attach_review(result, market, code, observed, end, dates, points):
     as_of=today()
     cap=end if end<=as_of else as_of
     later=any(isinstance(day, str) and observed<day<=cap for day in dates)

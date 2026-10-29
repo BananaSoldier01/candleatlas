@@ -48,13 +48,20 @@ def technical(rows):
 
 
 def _number_gate_status(ai):
-    if not isinstance(ai,dict):return 'clean'
-    for key in ('overview','supporting','opposing','watch'):
-        rows=ai.get(key)
-        if not isinstance(rows,list):continue
-        for row in rows:
-            if isinstance(row,dict) and isinstance(row.get('text'),str) and MARK in row['text']:return 'masked'
-    return 'clean'
+    masked=False
+    unverified=False
+    if isinstance(ai,dict):
+        for key in ('overview','supporting','opposing','watch'):
+            rows=ai.get(key)
+            if not isinstance(rows,list):continue
+            for row in rows:
+                if not isinstance(row,dict):continue
+                if isinstance(row.get('text'),str) and MARK in row['text']:masked=True
+                if row.get('unit_unverified') is True:unverified=True
+    if masked and unverified:return {'status':'masked','unit_unverified':True}
+    if unverified:return {'status':'unit_unverified','unit_unverified':True}
+    if masked:return {'status':'masked'}
+    return {'status':'clean'}
 
 
 def has_usable_technical(values):
@@ -218,13 +225,12 @@ class Analysis:
             validated=validate_report(result,{r['id'] for r in payload['evidence']})
             try:
                 gated=gate_ai_report(validated,payload['evidence'])
-                gate_status=_number_gate_status(gated)
             except Exception:
                 payload['ai']=validated
                 payload['number_gate']={'status':'failed'}
             else:
                 payload['ai']=gated
-                payload['number_gate']={'status':gate_status}
+                payload['number_gate']=_number_gate_status(gated)
             payload['completed_at']=dt.datetime.now(TZ).isoformat()
             self.update(identifier,'分析完成','complete',payload)
         except DataError as e:self.update(identifier,'解读未完成，已取得的材料保留','partial',payload,error=str(e))

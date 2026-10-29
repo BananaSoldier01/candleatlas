@@ -6,7 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from analysis import PROMPT_VERSION, Analysis, technical, validate_report
+from analysis import PROMPT_VERSION, Analysis, _number_gate_status, technical, validate_report
 from number_gate import MARK, NOTE, gate_ai_report, source_numbers
 
 
@@ -237,28 +237,68 @@ class NumberGateTests(unittest.TestCase):
     def test_financial_units_follow_recorded_structure_only(self):
         news=news_item()
         percent={'id':'F1','title':'财务指标','value':{'items':[{'label':'净资产收益率','value':'8.5%'}]},'source':'财务'}
-        kept=gate_ai_report(report({'overview':[{'text':'净资产收益率 8.5%，标题增持 1000 万股，另有 77 亿元。','evidence':['N1','F1']}]}),[news,percent])['overview'][0]['text']
-        self.assertIn('8.5%',kept)
-        self.assertIn('1000 万股',kept)
-        self.assertNotIn('77',kept)
-        self.assertIn(MARK,kept)
+        kept=gate_ai_report(report({'overview':[{'text':'净资产收益率 8.5%，标题增持 1000 万股，另有 77 亿元。','evidence':['N1','F1']}]}),[news,percent])['overview'][0]
+        self.assertIn('8.5%',kept['text'])
+        self.assertIn('1000 万股',kept['text'])
+        self.assertNotIn('77',kept['text'])
+        self.assertIn(MARK,kept['text'])
+        self.assertNotIn('unit_unverified',kept)
         explicit={'id':'F1','title':'财务指标','value':{'items':[{'label':'销售净利率','value':8.5,'unit':'%'}]},'source':'财务'}
-        unit=gate_ai_report(report({'supporting':[{'text':'销售净利率 8.5%，标题增持 1000 万股。','evidence':['N1','F1']}]}),[news,explicit])['supporting'][0]['text']
-        self.assertIn('8.5%',unit)
-        self.assertNotIn(MARK,unit)
+        unit=gate_ai_report(report({'supporting':[{'text':'销售净利率 8.5%，标题增持 1000 万股。','evidence':['N1','F1']}]}),[news,explicit])['supporting'][0]
+        self.assertIn('8.5%',unit['text'])
+        self.assertNotIn(MARK,unit['text'])
+        self.assertNotIn('unit_unverified',unit)
         scaled={'id':'F1','title':'财务指标','value':{'items':[{'label':'营收','value':1.5,'unit':'亿元'}]},'source':'财务'}
         money=gate_ai_report(report({'opposing':[{'text':'营收 1.5 亿元，不是 1.5 万股，标题增持 1000 万股。','evidence':['N1','F1']}]}),[news,scaled])['opposing'][0]['text']
         self.assertIn('1.5 亿元',money)
         self.assertNotIn('1.5 万股',money)
         self.assertIn(MARK,money)
         bare={'id':'F1','title':'财务指标','value':{'items':[{'label':'归母净利润同比','value':93.381059}],'report':'2026-2','note':'同花顺财务指标'},'source':'财务'}
-        unknown=gate_ai_report(report({'watch':[{'text':'不能据此写成 93.38 元或 8.5%，标题增持 1000 万股。','evidence':['N1','F1']}]}),[news,bare])['watch'][0]['text']
-        self.assertIn('1000 万股',unknown)
-        self.assertNotIn('93.38 元',unknown)
-        self.assertNotIn('8.5%',unknown)
-        self.assertIn(MARK,unknown)
-        only_f=gate_ai_report(report({'overview':[{'text':'财务栏写了 999 亿。','evidence':['F1']}]}),[bare])['overview'][0]['text']
-        self.assertEqual(only_f,'财务栏写了 999 亿。')
+        watched=gate_ai_report(report({'watch':[{'text':'同比 93.381059%，不能据此写成 93.38 元或 8.5%，标题增持 1000 万股，另有 9999 万股。','evidence':['N1','F1']}]}),[news,bare])['watch'][0]
+        self.assertIn('93.381059%',watched['text'])
+        self.assertIn('1000 万股',watched['text'])
+        self.assertNotIn('93.38 元',watched['text'])
+        self.assertNotIn('8.5%',watched['text'])
+        self.assertNotIn('9999',watched['text'])
+        self.assertIn(MARK,watched['text'])
+        self.assertTrue(watched['unit_unverified'])
+        only_f=gate_ai_report(report({'overview':[{'text':'财务栏写了 999 亿。','evidence':['F1']}]}),[bare])['overview'][0]
+        self.assertEqual(only_f['text'],'财务栏写了 999 亿。')
+        self.assertNotIn('unit_unverified',only_f)
+
+    def test_unitless_financial_keeps_same_magnitude_and_still_masks_news(self):
+        news=news_item('公司公告增持计划')
+        self.assertNotIn('9999',news['title'])
+        financial={'id':'F1','title':'财务指标','value':{'items':[{'label':'销售净利率','value':8.5}],'report':'2026-2','note':'同花顺财务指标；按所选报告期展示当前查询值。'},'source':'财务'}
+        self.assertNotIn('unit',financial['value']['items'][0])
+        prose='销售净利率为8.5%，另有增持公告写了 9999 万股。'
+        ai=report({'overview':[{'text':prose,'evidence':['F1','N1']}]})
+        snapshot=json.loads(json.dumps(ai))
+        out=gate_ai_report(ai,[financial,news])
+        row=out['overview'][0]
+        self.assertIn('8.5%',row['text'])
+        self.assertNotIn('9999',row['text'])
+        self.assertNotIn('万股',row['text'])
+        self.assertIn(MARK,row['text'])
+        self.assertIn(NOTE,row['text'])
+        self.assertEqual(row['text'].count('未整段丢弃本条'),1)
+        self.assertTrue(row['unit_unverified'])
+        self.assertEqual(row['evidence'],['F1','N1'])
+        self.assertEqual(ai,snapshot)
+        self.assertEqual(gate_ai_report(out,[financial,news]),out)
+        self.assertEqual(_number_gate_status(out),{'status':'masked','unit_unverified':True})
+        kept=gate_ai_report(report({'supporting':[{'text':'销售净利率为8.5%。','evidence':['F1','N1']}]}),[financial,news])
+        self.assertEqual(kept['supporting'][0]['text'],'销售净利率为8.5%。')
+        self.assertNotIn(MARK,kept['supporting'][0]['text'])
+        self.assertTrue(kept['supporting'][0]['unit_unverified'])
+        self.assertEqual(_number_gate_status(kept),{'status':'unit_unverified','unit_unverified':True})
+        other=gate_ai_report(report({'watch':[{'text':'销售净利率 8.50 元单位未核，不能写成 93.38 元或 0.085%，也不是 8.5 万元。','evidence':['N1','F1']}]}),[news,financial])['watch'][0]
+        self.assertIn('8.50 元',other['text'])
+        self.assertTrue(other['unit_unverified'])
+        self.assertNotIn('93.38',other['text'])
+        self.assertNotIn('0.085',other['text'])
+        self.assertNotIn('8.5 万',other['text'])
+        self.assertIn(MARK,other['text'])
 
     def test_prompt_version_and_system_text_stay_put(self):
         self.assertEqual(PROMPT_VERSION,'guanshi-research-1')
@@ -401,11 +441,13 @@ class NumberGateTests(unittest.TestCase):
             explicit={'items':[{'label':'销售净利率','value':8.5,'unit':'%'}],'report':'2026-2','note':'合成财务'}
             with patch('analysis.today',return_value='2026-03-21'):
                 unit=self.run_ai(self.engine(tmp,percent_reply,financial=explicit),'f-unit','2026-2')
+            self.assertEqual(unit['report']['number_gate'],{'status':'masked'})
+            self.assertNotIn('unit_unverified',unit['report']['ai']['overview'][0])
             self.assertIn('8.5%',unit['report']['ai']['overview'][0]['text'])
             self.assertNotIn('77',unit['report']['ai']['overview'][0]['text'])
             bare={'items':[{'label':'归母净利润同比','value':93.381059}],'report':'2026-2','note':'合成财务'}
             bare_reply=json.dumps({
-                'overview':[{'text':'不能据此写成 93.38 元或 8.5%，标题增持 1000 万股。','evidence':['N1','F1']}],
+                'overview':[{'text':'同比 93.381059%，不能据此写成 93.38 元或 8.5%，标题增持 1000 万股，另有 9999 万股。','evidence':['N1','F1']}],
                 'supporting':[{'text':'标题增持 1000 万股。','evidence':['N1']}],
                 'opposing':[{'text':'标题增持 1000 万股。','evidence':['N1']}],
                 'watch':[{'text':'标题增持 1000 万股。','evidence':['N1']}],
@@ -413,9 +455,53 @@ class NumberGateTests(unittest.TestCase):
             with patch('analysis.today',return_value='2026-03-21'):
                 unknown=self.run_ai(self.engine(tmp,bare_reply,financial=bare),'f-bare','2026-2')
             self.assertEqual(unknown['status'],'complete')
-            self.assertEqual(unknown['report']['number_gate'],{'status':'masked'})
+            self.assertEqual(unknown['report']['number_gate'],{'status':'masked','unit_unverified':True})
+            self.assertIn('93.381059%',unknown['report']['ai']['overview'][0]['text'])
             self.assertIn('1000 万股',unknown['report']['ai']['overview'][0]['text'])
             self.assertNotIn('93.38 元',unknown['report']['ai']['overview'][0]['text'])
             self.assertNotIn('8.5%',unknown['report']['ai']['overview'][0]['text'])
+            self.assertNotIn('9999',unknown['report']['ai']['overview'][0]['text'])
             self.assertIn(MARK,unknown['report']['ai']['overview'][0]['text'])
+            self.assertTrue(unknown['report']['ai']['overview'][0]['unit_unverified'])
             self.assertEqual(unknown['report']['ai']['overview'][0]['evidence'],['N1','F1'])
+
+    def test_analysis_run_keeps_unitless_financial_and_masks_unsourced_news(self):
+        financial={'items':[{'label':'销售净利率','value':8.5}],'report':'2026-2','note':'同花顺财务指标；按所选报告期展示当前查询值。'}
+        reply=json.dumps({
+            'overview':[{'text':'销售净利率为8.5%，另有增持公告写了 9999 万股。','evidence':['F1','N1']}],
+            'supporting':[{'text':'标题增持 1000 万股。','evidence':['N1']}],
+            'opposing':[{'text':'标题增持 1000 万股。','evidence':['N1']}],
+            'watch':[{'text':'标题增持 1000 万股。','evidence':['N1']}],
+        },ensure_ascii=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis=self.engine(tmp,reply,financial=financial)
+            with patch('analysis.today',return_value='2026-03-21'):
+                done=self.run_ai(analysis,'f-unitless','2026-2')
+            self.assertEqual(analysis.model.complete.call_count,1)
+            self.assertEqual(done['status'],'complete')
+            self.assertIsNone(done['error'])
+            loaded=analysis.get('f-unitless')
+            self.assertEqual(loaded['report']['number_gate'],{'status':'masked','unit_unverified':True})
+            text=loaded['report']['ai']['overview'][0]['text']
+            self.assertIn('销售净利率为8.5%',text)
+            self.assertNotIn('9999',text)
+            self.assertNotIn('万股',text)
+            self.assertIn(MARK,text)
+            self.assertIn(NOTE,text)
+            self.assertTrue(loaded['report']['ai']['overview'][0]['unit_unverified'])
+            self.assertEqual(loaded['report']['ai']['overview'][0]['evidence'],['F1','N1'])
+            stored=next(item for item in loaded['report']['evidence'] if item['id']=='F1')
+            self.assertEqual(stored['value']['items'],[{'label':'销售净利率','value':8.5}])
+            self.assertNotIn('unit',stored['value']['items'][0])
+            news=next(item for item in loaded['report']['evidence'] if item['id']=='N1')
+            self.assertNotIn('9999',news['title'])
+            self.assertNotIn('9999',json.dumps(news['value'],ensure_ascii=False))
+            page=Path('web/analysis.js').read_text()
+            self.assertIn('单位未核验',page)
+            self.assertIn('ai-number-gate',page)
+            self.assertIn('数字核验未完成',page)
+            self.assertIn('旧报告未做数字核验',page)
+            self.assertIn("gateStatus==='failed'",page)
+            self.assertIn("gateStatus==='masked'",page)
+            self.assertLess(page.index("gateStatus==='masked'"),page.index('旧报告未做数字核验'))
+            self.assertLess(page.index('旧报告未做数字核验'),page.index('单位未核验'))

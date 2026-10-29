@@ -4,9 +4,13 @@ Items that cite only technical (T*) or financial (F*) evidence are left as
 written. News and disclosure items (N*/D*) keep the sentence, but a figure
 is swapped for MARK unless the same magnitude and dimension appear in the
 cited N/D text or, when those are mixed with T/F, in T/F structured fields
-(with mapped or recorded units) or N/D content. Dates, years written with
-年, material ids, "近 N 日" windows and known indicator parameter groups
-are not claims. This checks citation presence, not that the sentence is
+(with mapped or recorded units) or N/D content. A financial value stored
+without a unit is not given a guessed dimension. If the claim's literal
+magnitude equals that bare value (万/亿 expanded; 8.5% compares as 8.5, not
+0.085), the wording stays and the item is marked unit-unverified. Any other
+magnitude in the same item is still masked. Dates, years written with 年,
+material ids, "近 N 日" windows and known indicator parameter groups are
+not claims. This checks citation presence, not that the sentence is
 factually or semantically correct.
 """
 import copy
@@ -65,13 +69,18 @@ def _dimension(unit):
     return found[-1] if found else 'unitless'
 
 
-def _amount(match):
+def _magnitude(match):
     raw=match.group('int').replace(',','').replace('，','')
     if match.group('frac'):raw+='.'+match.group('frac')
     value=Decimal(raw)*_SCALE[match.group('mag') or '']
+    if match.group('sign')=='-':value=-value
+    return value
+
+
+def _amount(match):
+    value=_magnitude(match)
     unit=match.group('unit') or ''
     if '%' in unit or '％' in unit:value/=Decimal(100)
-    if match.group('sign')=='-':value=-value
     return value,_dimension(unit)
 
 
@@ -191,7 +200,12 @@ def _tech_numbers(value):
 
 
 def _finance_numbers(value):
-    found=set()
+    # 有记录单位的进已知维度。裸数值不猜成 % 或元，只进无单位集合。
+    known=set();bare=set()
+    def add(pair):
+        mag,dim=pair
+        if dim=='unitless':bare.add(mag)
+        else:known.add(pair)
     def walk(node):
         if isinstance(node,dict):
             unit=None
@@ -203,9 +217,10 @@ def _finance_numbers(value):
                 item=node['value']
                 number=_as_decimal(item)
                 if number is not None:
-                    found.add(_apply_unit(number,unit) if unit else (number,'unitless'))
+                    if unit:add(_apply_unit(number,unit))
+                    else:bare.add(number)
                 elif isinstance(item,str):
-                    found.update(_numbers_in(item))
+                    for pair in _numbers_in(item):add(pair)
                 else:
                     walk(item)
             for key,item in node.items():
@@ -215,20 +230,20 @@ def _finance_numbers(value):
         elif isinstance(node,(list,tuple)):
             for item in node:walk(item)
         elif isinstance(node,str):
-            found.update(_numbers_in(node))
+            for pair in _numbers_in(node):add(pair)
         else:
             number=_as_decimal(node)
-            if number is not None:found.add((number,'unitless'))
+            if number is not None:bare.add(number)
     walk(value)
-    return found
+    return known,bare
 
 
 def _structured_numbers(item,kind):
-    if not isinstance(item,dict):return set()
+    if not isinstance(item,dict):return set(),set()
     value=item.get('value')
-    if kind=='T':return _tech_numbers(value)
+    if kind=='T':return _tech_numbers(value),set()
     if kind=='F':return _finance_numbers(value)
-    return set()
+    return set(),set()
 
 
 def _allowed(ids,by_id):
@@ -238,32 +253,39 @@ def _allowed(ids,by_id):
     if kinds&{'T','F'} and not kinds&{'N','D'}:return None
     chosen=[item for item in ids if item[:1] in 'NDTF'] if kinds&{'N','D'} else list(ids)
     blobs=[]
-    allowed=set()
+    allowed=set();bare=set()
     for item in chosen:
         kind=item[:1]
-        if kind in 'TF':allowed.update(_structured_numbers(by_id.get(item),kind))
+        if kind in 'TF':
+            known,extra=_structured_numbers(by_id.get(item),kind)
+            allowed.update(known);bare.update(extra)
         else:blobs.extend(_material_texts(by_id.get(item),kind in 'ND'))
     allowed.update(source_numbers(blobs))
-    return allowed
+    return allowed,bare
 
 
-def _replace(text,allowed):
+def _replace(text,allowed,bare):
     spans=_spans(text)
     pieces=[]
     last=0
     changed=False
+    unverified=False
     for match in _CLAIM.finditer(text):
         if match.start()==match.end() or _overlaps(match.start(),match.end(),spans):continue
+        # 已知维度优先，命中则不算未核验。对不上时用字面量（百分号不除 100）对照无单位财务。
         if _amount(match) in allowed:continue
+        if _magnitude(match) in bare:
+            unverified=True
+            continue
         pieces.append(text[last:match.start()])
         pieces.append(MARK)
         last=match.end()
         changed=True
-    if not changed:return text
+    if not changed:return text,unverified
     pieces.append(text[last:])
     body=''.join(pieces)
     if NOTE not in body:body+=NOTE
-    return body
+    return body,unverified
 
 
 def gate_ai_report(ai,evidence):
@@ -272,7 +294,8 @@ def gate_ai_report(ai,evidence):
     Evidence id lists are preserved. The input is not modified. Items that
     cite only T*/F* are copied unchanged. N/D mixed with T/F keeps a number
     when N/D content or T/F structured fields contain that magnitude and
-    dimension.
+    dimension. A unitless financial magnitude keeps the original wording and
+    sets unit_unverified on that item instead of masking it.
     """
     if not isinstance(ai,dict):return copy.deepcopy(ai)
     by_id={}
@@ -287,7 +310,10 @@ def gate_ai_report(ai,evidence):
             if not isinstance(row,dict) or not isinstance(row.get('text'),str):continue
             refs=row.get('evidence')
             ids=[item for item in refs if isinstance(item,str)] if isinstance(refs,list) else []
-            allowed=_allowed(ids,by_id)
-            if allowed is None:continue
-            row['text']=_replace(row['text'],allowed)
+            decision=_allowed(ids,by_id)
+            if decision is None:continue
+            allowed,bare=decision
+            row['text'],unverified=_replace(row['text'],allowed,bare)
+            if unverified:row['unit_unverified']=True
+            elif 'unit_unverified' in row:del row['unit_unverified']
     return out

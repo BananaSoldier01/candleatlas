@@ -27,8 +27,10 @@ test('analysis renderer no longer emits undefined delta color classes', () => {
   assert.equal(/\bdelta-flat\b/.test(src), false);
   assert.match(src, /DeltaDisplay\.deltaToneClass/);
   assert.match(src, /<details class="delta-metrics" open>/);
-  assert.match(src, /<details class="delta-notices">/);
+  assert.match(src, /<details class="delta-notices"/);
   assert.match(src, /过程对比 · 并排看每份报告怎么得出来的/);
   assert.match(src, /只比较方法与取数范围，不比较结果好坏。/);
   assert.match(src, /披露 \/ 公告材料变化/);
+  assert.match(src, /noticeShow/);
+  assert.match(src, /noticeSummary/);
 });

@@ -145,23 +145,27 @@ class NoticeViewTests(unittest.TestCase):
         ])
         self.assertEqual(view["items"][0]["title"], "<新公告>")
         self.assertEqual(view["items"][3]["title"], "更正后")
-        self.assertIn("材料清单的变化", view["summary"])
+        self.assertIn("所存材料清单的变化", view["summary"])
         self.assertIn("不判断利好或利空", view["summary"])
         self.assertEqual(view["note"], BACKFILL_NOTE)
         self.assertEqual(notice_view(old, new)["note"], "")
 
-    def test_missing_disclosures_and_old_shapes_are_empty(self):
-        for old, new in (
+    def test_missing_disclosures_are_suppressed_not_empty_diff(self):
+        cases = (
             ({}, {}),
             (None, None),
             ({"disclosures": None}, {"date": "2026-03-20"}),
             ({"disclosures": []}, {"disclosures": {"items": "bad"}}),
             ({"disclosures": {"items": [None, "x", {"title": "无编号"}]}}, {"disclosures": {"items": None}}),
-        ):
+        )
+        for old, new in cases:
             with self.subTest(old=old, new=new):
                 view = notice_view(old, new)
                 self.assertEqual(view["items"], [])
-                self.assertIn("新增 0 项", view["summary"])
+                self.assertFalse(view.get("comparable", True))
+                self.assertNotIn("消失", view["summary"])
+                self.assertNotIn("新增 0 项", view["summary"])
+                self.assertTrue(view["summary"])
 
 
 class ProcessViewTests(unittest.TestCase):
@@ -299,7 +303,10 @@ class BuildDeltaCompatTests(unittest.TestCase):
         self.assertIsNone(change["new"])
         self.assertIsNone(change["diff"])
         self.assertEqual(change["kind"], "both_missing")
-        self.assertEqual([n["kind"] for n in delta["notices"]["items"]], ["added"])
+        # Legacy baseline has no disclosures field: suppress清单差, do not claim "added".
+        self.assertEqual(delta["notices"]["items"], [])
+        self.assertFalse(delta["notices"]["comparable"])
+        self.assertIn("此前报告", delta["notices"]["summary"])
         self.assertNotIn("future", [c["id"] for c in delta["process"]["columns"]])
         self.assertIn("cur", [c["id"] for c in delta["process"]["columns"]])
         self.assertLessEqual(len(delta["process"]["columns"]), 4)

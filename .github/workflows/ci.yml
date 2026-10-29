@@ -30,6 +30,6 @@ jobs:
       - name: Python offline regression
         run: python -m unittest discover -s tests -q
       - name: JavaScript calculations
-        run: node --test tests/test_guide.js tests/test_price_technical.js
+        run: node --test tests/test_*.js
       - name: JavaScript syntax
         run: for file in web/*.js; do node --check "$file"; done

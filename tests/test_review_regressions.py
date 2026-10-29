@@ -1,4 +1,4 @@
-"""Regressions from the 2026-10-29 joint review of PR #6 / #7 (P1 items)."""
+"""Regressions from the 2026-10-29 joint review of PR #6 / #7."""
 import datetime as dt
 import json
 import tempfile
@@ -154,3 +154,77 @@ class ObservationDateBindingTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body['observed'],'2026-02-24')
         self.assertEqual(body, plain)
+
+
+
+class DisclosureNoticeSuppressionTests(unittest.TestCase):
+    """Failed / absent disclosures must not look like notices that disappeared."""
+
+    def setUp(self):
+        from report_compare import notice_view
+        self.notice_view = notice_view
+
+    def available(self, *items, period_end='2025-12-31'):
+        return {"disclosures": {"status": "available", "period_end": period_end, "items": list(items)}}
+
+    def test_failed_current_not_a_removed_notice(self):
+        old = self.available({"id": "annual-1", "title": "合成年度报告", "notice_date": "2026-03-01"})
+        new = {"disclosures": {"status": "failed", "period_end": "2025-12-31", "items": [],
+                              "note": "披露资料校验未通过，暂不展示；其他分析仍可使用。"}}
+        view = self.notice_view(old, new)
+        self.assertEqual(view["items"], [])
+        self.assertFalse(view["comparable"])
+        self.assertNotIn("消失", view["summary"])
+        self.assertIn("校验未通过", view["summary"])
+
+    def test_absent_disclosures_field_not_a_removed_notice(self):
+        old = self.available({"id": "annual-1", "title": "合成年度报告", "notice_date": "2026-03-01"})
+        new = {"date": "2026-03-20", "technical": {}}
+        view = self.notice_view(old, new)
+        self.assertEqual(view["items"], [])
+        self.assertFalse(view["comparable"])
+        self.assertNotIn("消失", view["summary"])
+        self.assertIn("未采集或未知", view["summary"])
+
+    def test_unconfigured_and_failed_both_sides(self):
+        old = {"disclosures": {"status": "unconfigured", "items": [], "period_end": "2025-12-31"}}
+        new = {"disclosures": {"status": "failed", "items": [], "period_end": "2025-12-31"}}
+        view = self.notice_view(old, new)
+        self.assertEqual(view["items"], [])
+        self.assertFalse(view["comparable"])
+        self.assertNotRegex(view["summary"], r"新增 \d+ 项")
+        self.assertNotRegex(view["summary"], r"消失 \d+ 项")
+        self.assertIn("不能判断材料清单增减", view["summary"])
+
+    def test_first_report_has_no_baseline_diff(self):
+        new = self.available({"id": "annual-1", "title": "合成年度报告", "notice_date": "2026-03-01"})
+        view = self.notice_view(None, new)
+        self.assertEqual(view["items"], [])
+        self.assertFalse(view["comparable"])
+        self.assertIn("无更早报告", view["summary"])
+        self.assertNotIn("新增 1", view["summary"])
+
+    def test_different_period_end_suppressed(self):
+        old = self.available({"id": "a", "title": "年报", "notice_date": "2025-03-01"}, period_end="2024-12-31")
+        new = self.available({"id": "a", "title": "年报", "notice_date": "2026-03-01"}, period_end="2025-12-31")
+        view = self.notice_view(old, new)
+        self.assertEqual(view["items"], [])
+        self.assertFalse(view["comparable"])
+        self.assertIn("报告期不同", view["summary"])
+
+    def test_normal_add_remove_still_works(self):
+        old = self.available(
+            {"id": "keep", "title": "保留", "notice_date": "2026-03-01"},
+            {"id": "gone", "title": "旧材料", "notice_date": "2026-03-02"},
+            period_end="2025-12-31",
+        )
+        new = self.available(
+            {"id": "keep", "title": "保留", "notice_date": "2026-03-01"},
+            {"id": "new", "title": "新材料", "notice_date": "2026-03-03"},
+            period_end="2025-12-31",
+        )
+        view = self.notice_view(old, new)
+        self.assertTrue(view["comparable"])
+        kinds = {row["id"]: row["kind"] for row in view["items"]}
+        self.assertEqual(kinds, {"new": "added", "gone": "removed", "keep": "unchanged"})
+        self.assertIn("所存材料清单的变化", view["summary"])

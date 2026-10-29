@@ -110,6 +110,13 @@ def _payload_from_row(row: dict) -> dict:
     }
 
 
+# 明确不可比的披露状态：缺字段/失败/未配置等都不能当成「清单为空」。
+_DISCLOSURE_UNKNOWN = frozenset({
+    "failed", "unconfigured", "uncovered", "period_not_covered",
+    "not_yet_available", "unavailable", "invalid",
+})
+
+
 def _disclosure_items(payload) -> list:
     if not isinstance(payload, dict):
         return []
@@ -133,10 +140,80 @@ def _disclosure_items(payload) -> list:
     return rows
 
 
+def _disclosure_list_state(payload):
+    """Distinguish a comparable material list from unknown / failed / absent.
+
+    Returns (ok, reason, items, period_end).
+    ok=True only when this side has a usable saved material inventory.
+    Legacy payloads with a list under disclosures.items and no status still count.
+    """
+    if not isinstance(payload, dict):
+        return False, "无更早报告可作材料清单对比。", [], None
+    if "disclosures" not in payload:
+        return False, "披露资料未采集或未知，不能判断材料清单增减。", [], None
+    block = payload.get("disclosures")
+    if block is None:
+        return False, "披露资料未采集或未知，不能判断材料清单增减。", [], None
+    if not isinstance(block, dict):
+        return False, "披露资料结构无效，不能判断材料清单增减。", [], None
+    status = block.get("status")
+    period = block.get("period_end") if isinstance(block.get("period_end"), str) else None
+    note = block.get("note") if isinstance(block.get("note"), str) else ""
+    if status in _DISCLOSURE_UNKNOWN:
+        label = {
+            "failed": "披露资料校验未通过",
+            "unconfigured": "本机尚未导入已核验披露资料",
+            "uncovered": "该股票尚未纳入本机已核验披露资料",
+            "period_not_covered": "该报告期尚未纳入本机已核验披露资料",
+            "not_yet_available": "截至观察日尚无可用的已核验披露材料",
+            "unavailable": "披露资料不可用",
+            "invalid": "披露资料无效",
+        }.get(status, "披露资料不可用")
+        reason = f"{label}，不能判断材料清单增减。"
+        if note.strip():
+            reason = f"{label}（{note.strip()}），不能判断材料清单增减。"
+        return False, reason, [], period
+    if "items" not in block or not isinstance(block.get("items"), list):
+        return False, "披露资料清单缺失或无效，不能判断材料清单增减。", [], period
+    if status not in (None, "available"):
+        return False, f"披露资料状态为 {status}，不能判断材料清单增减。", [], period
+    return True, "", _disclosure_items(payload), period
+
+
+def _notice_suppressed(reason: str, backfilled: bool = False) -> dict:
+    return {
+        "items": [],
+        "summary": reason,
+        "note": BACKFILL_NOTE if backfilled else "",
+        "comparable": False,
+        "reason": reason,
+    }
+
+
 def notice_view(old_payload, new_payload, backfilled: bool = False) -> dict:
-    """按公告 id 比较材料清单。只描述增减，不解释含义。"""
-    old_by = {ident: item for ident, item in _disclosure_items(old_payload)}
-    new_by = {ident: item for ident, item in _disclosure_items(new_payload)}
+    """按公告 id 比较所存材料清单。只描述增减，不解释含义。
+
+    先确认两侧都有可比的资料清单且报告期一致；否则抑制新增/消失并保留原因。
+    无基线（首次分析）同样不证明公告刚新增。
+    """
+    old_ok, old_reason, old_items, old_period = _disclosure_list_state(old_payload)
+    new_ok, new_reason, new_items, new_period = _disclosure_list_state(new_payload)
+    if not isinstance(old_payload, dict):
+        return _notice_suppressed("无更早报告可作材料清单对比。", backfilled=backfilled)
+    if not old_ok and not new_ok:
+        # Prefer the current report's reason when both sides are unknown.
+        return _notice_suppressed(new_reason or old_reason, backfilled=backfilled)
+    if not old_ok:
+        return _notice_suppressed("此前报告：" + old_reason, backfilled=backfilled)
+    if not new_ok:
+        return _notice_suppressed("本次报告：" + new_reason, backfilled=backfilled)
+    if old_period and new_period and old_period != new_period:
+        return _notice_suppressed(
+            f"报告期不同（此前 {old_period}，本次 {new_period}），材料范围不可比，不判断清单增减。",
+            backfilled=backfilled,
+        )
+    old_by = {ident: item for ident, item in old_items}
+    new_by = {ident: item for ident, item in new_items}
     rows = []
     for ident in set(old_by) | set(new_by):
         if ident in old_by and ident in new_by:
@@ -156,9 +233,15 @@ def notice_view(old_payload, new_payload, backfilled: bool = False) -> dict:
     added = sum(r["kind"] == "added" for r in rows)
     removed = sum(r["kind"] == "removed" for r in rows)
     same = sum(r["kind"] == "unchanged" for r in rows)
-    summary = (f"材料清单的变化：新增 {added} 项，消失 {removed} 项，没变 {same} 项。"
+    summary = (f"所存材料清单的变化：新增 {added} 项，消失 {removed} 项，没变 {same} 项。"
                "只记录材料清单的增减，不判断利好或利空。")
-    return {"items": rows, "summary": summary, "note": BACKFILL_NOTE if backfilled else ""}
+    return {
+        "items": rows,
+        "summary": summary,
+        "note": BACKFILL_NOTE if backfilled else "",
+        "comparable": True,
+        "reason": "",
+    }
 
 
 def _text(value) -> str:

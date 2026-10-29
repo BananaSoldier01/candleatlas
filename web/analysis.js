@@ -93,8 +93,14 @@
       return `<tr data-delta-metric="${esc(r.metric)}" data-metric-class="${esc(r.metric_class||'')}"><th scope="row">${kind}${esc(r.label||r.metric)}${r.note?`<small>${esc(r.note)}</small>`:''}</th><td>${value(r.old)}</td><td>${value(r.new)}</td><td${cls?` class="${cls}"`:''} data-delta-tone="${esc(cls)}">${esc(diffTxt)}</td></tr>`;
     }).join('');
     const metrics=body?`<details class="delta-metrics" open><summary>数值变化（${rows.length}）</summary><div class="delta-scroll"><table class="delta-table"><thead><tr><th>指标</th><th>此前</th><th>本次</th><th>变化</th></tr></thead><tbody>${body}</tbody></table></div></details>`:'<p class="empty-hint">暂无基线，保存后续报告后可查看变化。</p>';
-    const notices=v.notices&&Array.isArray(v.notices.items)?v.notices.items:[];
-    const noticeHTML=notices.length?`<details class="delta-notices"><summary>披露 / 公告材料变化（${notices.length}）</summary><p class="footnote">${esc(v.notices.summary||'只比较材料清单的变化，不判断利好或利空。')}</p>${v.notices.note?`<p class="footnote">${esc(v.notices.note)}</p>`:''}<ul class="delta-notice-list">${notices.map(n=>`<li data-notice-id="${esc(n.id)}" data-notice-kind="${esc(n.kind||'')}"><span class="delta-kind">${esc(n.kind_label||'')}</span>${esc(n.title||n.id||'')} <small>${esc(n.notice_date||'')}</small></li>`).join('')}</ul></details>`:'';
+    const noticeBlock=v.notices&&typeof v.notices==='object'?v.notices:null;
+    const notices=noticeBlock&&Array.isArray(noticeBlock.items)?noticeBlock.items:[];
+    const noticeSummary=noticeBlock&&typeof noticeBlock.summary==='string'?noticeBlock.summary:'';
+    const noticeShow=Boolean(noticeBlock&&(notices.length||noticeSummary));
+    const noticeOpen=noticeShow&&!notices.length?' open':'';
+    const noticeTitle=notices.length?`披露 / 公告材料变化（${notices.length}）`:'披露 / 公告材料变化';
+    const noticeList=notices.length?`<ul class="delta-notice-list">${notices.map(n=>`<li data-notice-id="${esc(n.id)}" data-notice-kind="${esc(n.kind||'')}"><span class="delta-kind">${esc(n.kind_label||'')}</span>${esc(n.title||n.id||'')} <small>${esc(n.notice_date||'')}</small></li>`).join('')}</ul>`:'';
+    const noticeHTML=noticeShow?`<details class="delta-notices"${noticeOpen}><summary>${noticeTitle}</summary><p class="footnote">${esc(noticeSummary||'只比较材料清单的变化，不判断利好或利空。')}</p>${noticeBlock.note?`<p class="footnote">${esc(noticeBlock.note)}</p>`:''}${noticeList}</details>`:'';
     return `<section class="report-delta"><h3>较上次变化 <small>${esc(status)}</small></h3><p class="footnote">${esc((v.reasons||[]).join('；')||'')}</p>${metrics}${noticeHTML}${processHTML(v.process)}</section>`;
   }
   function render(d){

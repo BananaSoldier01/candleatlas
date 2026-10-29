@@ -106,6 +106,11 @@ class Analysis:
             d['delta']=build_delta(self,d)
         except Exception:
             d['delta']=None
+        try:
+            from reading_notes import invalidation_lines
+            d['reading_notes']=invalidation_lines(d.get('report') or {})
+        except Exception:
+            d['reading_notes']=[]
         return d
 
     def update(self,identifier,phase,status='running',payload=None,error=None):

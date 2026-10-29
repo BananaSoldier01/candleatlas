@@ -106,3 +106,24 @@ body{height:100dvh;overflow:hidden}.shell{max-width:none;height:100dvh;padding:0
 body.demo-mode{padding-top:var(--demo-banner-height,60px);box-sizing:border-box;overflow:hidden}
 .demo-mode .shell{margin:0;padding-top:0;height:calc(100dvh - var(--demo-banner-height,60px))}
 .demo-mode [data-demo-disabled]{opacity:.5;cursor:not-allowed}
+.attention-card.workspace-panel{padding:14px 18px}
+.attention-card h2{margin:0;font-size:15px}
+.attention-count{margin:10px 0 0;font-size:13px}
+.attention-list{display:grid;gap:8px;margin-top:10px}
+.attention-row{display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;text-align:left;background:#f7f9f5;border:1px solid var(--line);border-radius:6px;padding:8px 10px;color:var(--ink)}
+.attention-row strong{font-weight:550}
+.attention-row small{display:block;color:var(--muted);font-size:11px;margin-top:2px}
+.attention-card .empty-hint{margin:8px 0 0}
+.rule-note{margin:6px 0 0;font-size:11px;line-height:1.7;color:var(--muted)}
+.rule-note summary{cursor:pointer;color:var(--accent)}
+.rule-note p{margin:6px 0}
+.rule-inline{margin:4px 0 0}
+.privacy-cluster{display:flex;align-items:center;gap:8px}
+#privacy-toggle{background:#fff;color:var(--ink);border:1px solid #d9e1d9}
+#privacy-toggle[aria-pressed="true"]{background:var(--ink);color:#fff;border-color:var(--ink)}
+.privacy-hint{max-width:11em;font-size:11px;line-height:1.45;color:var(--muted)}
+body.privacy-on .private-text:not(.private-revealed){user-select:none}
+body.privacy-on .private-text.private-revealed{user-select:text}
+body.privacy-on textarea.private-text:not(.private-revealed),body.privacy-on input.private-text:not(.private-revealed){color:transparent;text-shadow:0 0 8px rgba(31,48,42,.72);caret-color:transparent}
+body.privacy-on textarea.private-text.private-revealed,body.privacy-on input.private-text.private-revealed{color:inherit;text-shadow:none;caret-color:auto;user-select:text}
+@media(max-width:700px){.privacy-hint{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.attention-card.workspace-panel{padding:14px}}

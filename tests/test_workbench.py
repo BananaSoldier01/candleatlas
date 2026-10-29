@@ -47,3 +47,25 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual(item['rule_version'],assessment['rule_version'])
         self.assertEqual(item['coverage'],assessment['coverage'])
         self.assertIsNone(item['components']['volume_coord'])
+
+    def test_status_priority_is_completion_not_price(self):
+        day='2026-09-23'
+        specs=[
+            ('600003.SH','ready','complete',day,day),
+            ('600001.SH','outdated','complete','2026-09-22','2026-09-22'),
+            ('600008.SH','missing',None,None,None),
+            ('600005.SH','missing',None,None,None),
+            ('600002.SH','incomplete','partial',day,day),
+            ('600000.SH','running','running',day,day),
+        ]
+        for code,kind,status,report_day,asof in specs:
+            self.t.save(dict(thscode=code,name='测试'+code,date=day,note='核对'))
+            if kind=='missing':continue
+            payload={'technical':{'close':10,'asof':asof,'trend':'均线交错'}}
+            with self.a.db() as db:
+                db.execute('INSERT INTO reports VALUES(?,?,?,?,?,?,?,?)',(code,code,report_day,report_day+'T16:00:00+08:00',status,'分析完成',json.dumps(payload),None))
+        result=summary(self.t,self.a,day)
+        self.assertEqual([item['status'] for item in result['items']],['incomplete','missing','missing','outdated','running','ready'])
+        self.assertEqual([item['thscode'] for item in result['items']],['600002.SH','600005.SH','600008.SH','600001.SH','600000.SH','600003.SH'])
+        self.assertEqual(result['counts'],{'stocks':6,'pending':4,'ready':1,'records':6})
+        self.assertTrue(all(item['note']=='核对' for item in result['items']))

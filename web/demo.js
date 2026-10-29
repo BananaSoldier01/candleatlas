@@ -22,7 +22,7 @@
     const chart=document.querySelector('#guide-lab-chart svg'),label=chart?.getAttribute('aria-label');
     if(label?.includes('真实行情'))chart.setAttribute('aria-label',label.replaceAll('真实行情','合成行情'));
    }
-   for(const n of document.querySelectorAll(selectors.join(','))){if(!n.disabled)n.disabled=true;if(!n.hasAttribute('data-demo-disabled')){n.setAttribute('data-demo-disabled','');n.title='演示模式只读，不提交或保存';}}
+   for(const n of document.querySelectorAll(selectors.join(','))){if(n.id==='privacy-toggle')continue;if(!n.disabled)n.disabled=true;if(!n.hasAttribute('data-demo-disabled')){n.setAttribute('data-demo-disabled','');n.title='演示模式只读，不提交或保存';}}
   }
   new MutationObserver(disable).observe(document.body,{subtree:true,childList:true});disable();
  }catch{ /* Live mode still uses its normal error reporting. */ }

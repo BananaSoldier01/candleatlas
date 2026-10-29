@@ -6,7 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from analysis import PROMPT_VERSION, Analysis, validate_report
+from analysis import PROMPT_VERSION, Analysis, technical, validate_report
 from number_gate import MARK, NOTE, gate_ai_report, source_numbers
 
 
@@ -205,6 +205,61 @@ class NumberGateTests(unittest.TestCase):
         self.assertIn('0.5 元',text)
         self.assertNotIn('9 元',text)
 
+    def test_technical_field_units_are_mapped_when_mixed_with_news(self):
+        tech={'id':'T1','title':'行情与技术指标','value':technical(prices()),'source':'程序'}
+        news=news_item()
+        evidence=[news,tech]
+        self.assertEqual(tech['value']['close'],89)
+        close=gate_ai_report(report({'overview':[{'text':'收盘价为 89 元，不是 89 股，标题增持 1000 万股，另有订单 5000 万元。','evidence':['N1','T1']}]}),evidence)['overview'][0]['text']
+        self.assertIn('89 元',close)
+        self.assertIn('1000 万股',close)
+        self.assertNotIn('89 股',close)
+        self.assertNotIn('5000',close)
+        self.assertIn(MARK,close)
+        change=gate_ai_report(report({'supporting':[{'text':'近一日涨跌 1.14%，不是 1.14 元，标题增持 1000 万股。','evidence':['N1','T1']}]}),evidence)['supporting'][0]['text']
+        self.assertIn('1.14%',change)
+        self.assertIn('1000 万股',change)
+        self.assertNotIn('1.14 元',change)
+        self.assertIn(MARK,change)
+        volume=gate_ai_report(report({'opposing':[{'text':'量比 1.0 倍，不是 1.0 元，标题增持 1000 万股。','evidence':['N1','T1']}]}),evidence)['opposing'][0]['text']
+        self.assertIn('1.0 倍',volume)
+        self.assertIn('1000 万股',volume)
+        self.assertNotIn('1.0 元',volume)
+        self.assertIn(MARK,volume)
+        rsi=gate_ai_report(report({'watch':[{'text':'RSI 100，标题增持 1000 万股，另称订单 5000 万元。','evidence':['N1','T1']}]}),evidence)['watch'][0]['text']
+        self.assertIn('RSI 100',rsi)
+        self.assertIn('1000 万股',rsi)
+        self.assertNotIn('5000',rsi)
+        self.assertIn(MARK,rsi)
+        only_t=gate_ai_report(report({'overview':[{'text':'收盘价为 89 元。','evidence':['T1']}]}),evidence)['overview'][0]['text']
+        self.assertEqual(only_t,'收盘价为 89 元。')
+
+    def test_financial_units_follow_recorded_structure_only(self):
+        news=news_item()
+        percent={'id':'F1','title':'财务指标','value':{'items':[{'label':'净资产收益率','value':'8.5%'}]},'source':'财务'}
+        kept=gate_ai_report(report({'overview':[{'text':'净资产收益率 8.5%，标题增持 1000 万股，另有 77 亿元。','evidence':['N1','F1']}]}),[news,percent])['overview'][0]['text']
+        self.assertIn('8.5%',kept)
+        self.assertIn('1000 万股',kept)
+        self.assertNotIn('77',kept)
+        self.assertIn(MARK,kept)
+        explicit={'id':'F1','title':'财务指标','value':{'items':[{'label':'销售净利率','value':8.5,'unit':'%'}]},'source':'财务'}
+        unit=gate_ai_report(report({'supporting':[{'text':'销售净利率 8.5%，标题增持 1000 万股。','evidence':['N1','F1']}]}),[news,explicit])['supporting'][0]['text']
+        self.assertIn('8.5%',unit)
+        self.assertNotIn(MARK,unit)
+        scaled={'id':'F1','title':'财务指标','value':{'items':[{'label':'营收','value':1.5,'unit':'亿元'}]},'source':'财务'}
+        money=gate_ai_report(report({'opposing':[{'text':'营收 1.5 亿元，不是 1.5 万股，标题增持 1000 万股。','evidence':['N1','F1']}]}),[news,scaled])['opposing'][0]['text']
+        self.assertIn('1.5 亿元',money)
+        self.assertNotIn('1.5 万股',money)
+        self.assertIn(MARK,money)
+        bare={'id':'F1','title':'财务指标','value':{'items':[{'label':'归母净利润同比','value':93.381059}],'report':'2026-2','note':'同花顺财务指标'},'source':'财务'}
+        unknown=gate_ai_report(report({'watch':[{'text':'不能据此写成 93.38 元或 8.5%，标题增持 1000 万股。','evidence':['N1','F1']}]}),[news,bare])['watch'][0]['text']
+        self.assertIn('1000 万股',unknown)
+        self.assertNotIn('93.38 元',unknown)
+        self.assertNotIn('8.5%',unknown)
+        self.assertIn(MARK,unknown)
+        only_f=gate_ai_report(report({'overview':[{'text':'财务栏写了 999 亿。','evidence':['F1']}]}),[bare])['overview'][0]['text']
+        self.assertEqual(only_f,'财务栏写了 999 亿。')
+
     def test_prompt_version_and_system_text_stay_put(self):
         self.assertEqual(PROMPT_VERSION,'guanshi-research-1')
         source=Path('analysis.py').read_text()
@@ -212,17 +267,19 @@ class NumberGateTests(unittest.TestCase):
         self.assertIn('你是股票研究助手，只使用给定材料，以简体中文输出 JSON，不使用 Markdown。',source)
         self.assertNotIn('略※',source)
 
-    def engine(self,folder,reply):
+    def engine(self,folder,reply,financial=None):
         market=Mock();market.prices.return_value={'items':prices()}
         news=Mock();news.stock.return_value={'items':[{'time':'2026-03-20 10:00:00','title':'公司公告增持 1000 万股','url':'https://example.com/n','source':'示例'}]}
         model=Mock();model.complete.return_value=reply
-        return Analysis(Path(folder)/'reports.sqlite3',market,news,Mock(),model)
+        themes=Mock()
+        if financial is not None:themes.financial.return_value=financial
+        return Analysis(Path(folder)/'reports.sqlite3',market,news,themes,model)
 
-    def run_ai(self,analysis,identifier):
+    def run_ai(self,analysis,identifier,report=''):
         with analysis.db() as db:
             db.execute('INSERT INTO reports VALUES (?,?,?,?,?,?,?,?)',
                        (identifier,'600487.SH','2026-03-21','2026-03-21T16:00:00+08:00','running','test',None,None))
-        analysis.run(identifier,'600487.SH','测试','2026-03-21','',True,{'model':'test-model'})
+        analysis.run(identifier,'600487.SH','测试','2026-03-21',report,True,{'model':'test-model'})
         return analysis.get(identifier)
 
     def test_analysis_gates_after_validation_and_survives_a_gate_error(self):
@@ -289,3 +346,76 @@ class NumberGateTests(unittest.TestCase):
             loaded=legacy.get('legacy')
             self.assertNotIn('number_gate',loaded['report'])
             self.assertEqual(loaded['report']['ai']['overview'][0]['text'],'旧文本没有闸门状态。')
+
+    def test_analysis_run_maps_technical_and_financial_units(self):
+        tech_reply=json.dumps({
+            'overview':[{'text':'收盘价为 89 元，不是 89 股，标题增持 1000 万股，另有订单 5000 万元。','evidence':['N1','T1']}],
+            'supporting':[{'text':'近一日涨跌 1.14%，不是 1.14 元，标题增持 1000 万股。','evidence':['N1','T1']}],
+            'opposing':[{'text':'量比 1.0 倍，标题增持 1000 万股。','evidence':['N1','T1']}],
+            'watch':[{'text':'RSI 100，标题增持 1000 万股。','evidence':['N1','T1']}],
+        },ensure_ascii=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis=self.engine(tmp,tech_reply)
+            done=self.run_ai(analysis,'tech-units')
+            self.assertEqual(done['status'],'complete')
+            self.assertIsNone(done['error'])
+            self.assertEqual(analysis.model.complete.call_count,1)
+            self.assertEqual(done['report']['technical']['close'],89)
+            self.assertEqual(done['report']['technical']['change1'],1.14)
+            self.assertEqual(done['report']['technical']['volume_ratio5'],1.0)
+            self.assertEqual(done['report']['technical']['rsi14'],100)
+            ai=done['report']['ai']
+            self.assertEqual(done['report']['number_gate'],{'status':'masked'})
+            self.assertIn('89 元',ai['overview'][0]['text'])
+            self.assertIn('1000 万股',ai['overview'][0]['text'])
+            self.assertNotIn('89 股',ai['overview'][0]['text'])
+            self.assertNotIn('5000',ai['overview'][0]['text'])
+            self.assertIn(MARK,ai['overview'][0]['text'])
+            self.assertIn('1.14%',ai['supporting'][0]['text'])
+            self.assertNotIn('1.14 元',ai['supporting'][0]['text'])
+            self.assertIn(MARK,ai['supporting'][0]['text'])
+            self.assertIn('1.0 倍',ai['opposing'][0]['text'])
+            self.assertIn('1000 万股',ai['opposing'][0]['text'])
+            self.assertNotIn(MARK,ai['opposing'][0]['text'])
+            self.assertIn('RSI 100',ai['watch'][0]['text'])
+            self.assertIn('1000 万股',ai['watch'][0]['text'])
+            self.assertNotIn(MARK,ai['watch'][0]['text'])
+            page=Path('web/analysis.js').read_text()
+            self.assertIn('数字核验未完成',page)
+            self.assertIn('旧报告未做数字核验',page)
+            percent={'items':[{'label':'净资产收益率','value':'8.5%'}],'report':'2026-2','note':'合成财务'}
+            percent_reply=json.dumps({
+                'overview':[{'text':'净资产收益率 8.5%，标题增持 1000 万股，另有 77 亿元。','evidence':['N1','F1']}],
+                'supporting':[{'text':'标题增持 1000 万股。','evidence':['N1']}],
+                'opposing':[{'text':'标题增持 1000 万股。','evidence':['N1']}],
+                'watch':[{'text':'标题增持 1000 万股。','evidence':['N1']}],
+            },ensure_ascii=False)
+            with patch('analysis.today',return_value='2026-03-21'):
+                finance=self.run_ai(self.engine(tmp,percent_reply,financial=percent),'f-percent','2026-2')
+            self.assertEqual(finance['status'],'complete')
+            self.assertEqual(finance['report']['number_gate'],{'status':'masked'})
+            self.assertIn('8.5%',finance['report']['ai']['overview'][0]['text'])
+            self.assertIn('1000 万股',finance['report']['ai']['overview'][0]['text'])
+            self.assertNotIn('77',finance['report']['ai']['overview'][0]['text'])
+            self.assertEqual(finance['report']['ai']['overview'][0]['evidence'],['N1','F1'])
+            explicit={'items':[{'label':'销售净利率','value':8.5,'unit':'%'}],'report':'2026-2','note':'合成财务'}
+            with patch('analysis.today',return_value='2026-03-21'):
+                unit=self.run_ai(self.engine(tmp,percent_reply,financial=explicit),'f-unit','2026-2')
+            self.assertIn('8.5%',unit['report']['ai']['overview'][0]['text'])
+            self.assertNotIn('77',unit['report']['ai']['overview'][0]['text'])
+            bare={'items':[{'label':'归母净利润同比','value':93.381059}],'report':'2026-2','note':'合成财务'}
+            bare_reply=json.dumps({
+                'overview':[{'text':'不能据此写成 93.38 元或 8.5%，标题增持 1000 万股。','evidence':['N1','F1']}],
+                'supporting':[{'text':'标题增持 1000 万股。','evidence':['N1']}],
+                'opposing':[{'text':'标题增持 1000 万股。','evidence':['N1']}],
+                'watch':[{'text':'标题增持 1000 万股。','evidence':['N1']}],
+            },ensure_ascii=False)
+            with patch('analysis.today',return_value='2026-03-21'):
+                unknown=self.run_ai(self.engine(tmp,bare_reply,financial=bare),'f-bare','2026-2')
+            self.assertEqual(unknown['status'],'complete')
+            self.assertEqual(unknown['report']['number_gate'],{'status':'masked'})
+            self.assertIn('1000 万股',unknown['report']['ai']['overview'][0]['text'])
+            self.assertNotIn('93.38 元',unknown['report']['ai']['overview'][0]['text'])
+            self.assertNotIn('8.5%',unknown['report']['ai']['overview'][0]['text'])
+            self.assertIn(MARK,unknown['report']['ai']['overview'][0]['text'])
+            self.assertEqual(unknown['report']['ai']['overview'][0]['evidence'],['N1','F1'])

@@ -3,10 +3,11 @@
 Items that cite only technical (T*) or financial (F*) evidence are left as
 written. News and disclosure items (N*/D*) keep the sentence, but a figure
 is swapped for MARK unless the same magnitude and dimension appear in the
-cited N/D text or, when those are mixed with T/F, in the cited T/F text.
-Dates, years written with 年, material ids, "近 N 日" windows and known
-indicator parameter groups are not claims. This checks citation presence,
-not that the sentence is factually or semantically correct.
+cited N/D text or, when those are mixed with T/F, in T/F structured fields
+(with mapped or recorded units) or N/D content. Dates, years written with
+年, material ids, "近 N 日" windows and known indicator parameter groups
+are not claims. This checks citation presence, not that the sentence is
+factually or semantically correct.
 """
 import copy
 import json
@@ -38,6 +39,14 @@ _CLAIM=re.compile(
 # 元股%倍点同时出现时取最后一项（「亿元」的单位是末尾的元）。
 _DIM={'元':'money','股':'shares','%':'percent','％':'percent','倍':'multiple','点':'points'}
 _CONTENT_KEYS=frozenset(('title','content','summary','abstract','正文','摘要','metrics','indicators','facts','items','structured','figures','values'))
+# T 报价字段口径；未点名的指标（MACD 等）按 unitless，不猜成 %。
+_TECH_DIMS={
+    'close':'money','ma5':'money','ma10':'money','ma20':'money','ma60':'money',
+    'change1':'percent','change20':'percent','bias20':'percent',
+    'volume_ratio5':'multiple','rsi14':'unitless',
+}
+_TECH_SKIP=frozenset(('sample','asof','method','trend'))
+_F_SKIP=frozenset(('value','unit','单位','label','title','note','report','source','id','method','trend','sample','asof'))
 
 
 def _spans(text):
@@ -140,6 +149,88 @@ def _material_texts(item,narrow=False):
     return texts
 
 
+def _as_decimal(value):
+    if isinstance(value,bool) or value is None:return None
+    if isinstance(value,Decimal):return value
+    if isinstance(value,int):return Decimal(value)
+    if isinstance(value,float):
+        if value!=value or value in (float('inf'),float('-inf')):return None
+        return Decimal(str(value))
+    return None
+
+
+def _apply_unit(number,unit):
+    text=unit or ''
+    mag=''
+    for token in ('万亿','亿','万'):
+        if token in text:
+            mag=token
+            break
+    value=number*_SCALE[mag]
+    dim=_dimension(text)
+    if dim=='percent':value/=Decimal(100)
+    return value,dim
+
+
+def _tech_numbers(value):
+    found=set()
+    if not isinstance(value,dict):return found
+    for key,item in value.items():
+        if key in _TECH_SKIP:continue
+        number=_as_decimal(item)
+        if number is None:continue
+        dim=_TECH_DIMS.get(key,'unitless')
+        if dim=='percent':
+            found.add((number/Decimal(100),'percent'))
+        elif dim=='money':
+            found.add((number,'money'))
+            found.add((number,'unitless'))
+        else:
+            found.add((number,dim))
+    return found
+
+
+def _finance_numbers(value):
+    found=set()
+    def walk(node):
+        if isinstance(node,dict):
+            unit=None
+            for key in ('unit','单位'):
+                raw=node.get(key)
+                if isinstance(raw,str) and raw.strip():
+                    unit=raw.strip();break
+            if 'value' in node:
+                item=node['value']
+                number=_as_decimal(item)
+                if number is not None:
+                    found.add(_apply_unit(number,unit) if unit else (number,'unitless'))
+                elif isinstance(item,str):
+                    found.update(_numbers_in(item))
+                else:
+                    walk(item)
+            for key,item in node.items():
+                if key in _F_SKIP:continue
+                if key in _CONTENT_KEYS or isinstance(item,(dict,list,tuple)):
+                    walk(item)
+        elif isinstance(node,(list,tuple)):
+            for item in node:walk(item)
+        elif isinstance(node,str):
+            found.update(_numbers_in(node))
+        else:
+            number=_as_decimal(node)
+            if number is not None:found.add((number,'unitless'))
+    walk(value)
+    return found
+
+
+def _structured_numbers(item,kind):
+    if not isinstance(item,dict):return set()
+    value=item.get('value')
+    if kind=='T':return _tech_numbers(value)
+    if kind=='F':return _finance_numbers(value)
+    return set()
+
+
 def _allowed(ids,by_id):
     ids=[item for item in ids if item]
     kinds={item[:1] for item in ids}
@@ -147,8 +238,13 @@ def _allowed(ids,by_id):
     if kinds&{'T','F'} and not kinds&{'N','D'}:return None
     chosen=[item for item in ids if item[:1] in 'NDTF'] if kinds&{'N','D'} else list(ids)
     blobs=[]
-    for item in chosen:blobs.extend(_material_texts(by_id.get(item),item[:1] in 'ND'))
-    return source_numbers(blobs)
+    allowed=set()
+    for item in chosen:
+        kind=item[:1]
+        if kind in 'TF':allowed.update(_structured_numbers(by_id.get(item),kind))
+        else:blobs.extend(_material_texts(by_id.get(item),kind in 'ND'))
+    allowed.update(source_numbers(blobs))
+    return allowed
 
 
 def _replace(text,allowed):
@@ -175,7 +271,8 @@ def gate_ai_report(ai,evidence):
 
     Evidence id lists are preserved. The input is not modified. Items that
     cite only T*/F* are copied unchanged. N/D mixed with T/F keeps a number
-    when either side contains that magnitude and dimension.
+    when N/D content or T/F structured fields contain that magnitude and
+    dimension.
     """
     if not isinstance(ai,dict):return copy.deepcopy(ai)
     by_id={}

@@ -64,7 +64,7 @@ def covers(gap, item):
 class DisclosureTests(unittest.TestCase):
     def test_five_items_keep_order_and_do_not_score(self):
         report = {'date': '2024-06-03', 'generated_at': '2024-06-03T16:00:00+08:00',
-                  'technical': {'asof': '2024-06-03', 'sample': 80}, 'ai': None}
+                  'technical': {'asof': '2024-06-03', 'sample': 80}, 'ai': None, 'model': None}
         items = disclosure_items({}, report, {'status': 'comparable', 'reasons': []})
         self.assertEqual([item['key'] for item in items], ['dates', 'sample', 'baseline', 'backfill', 'ai'])
         for item in items:
@@ -144,14 +144,25 @@ class DisclosureTests(unittest.TestCase):
         self.assertNotIn('基线', later['text'])
         # 16:30Z 是上海时间次日 00:30。
         self.assertEqual(item('2024-06-03T16:30:00Z')['text'], '是：生成于观察日之后，不代表当时可知')
-        self.assertEqual(item('2024-06-02T16:00:00+08:00')['text'], '否：生成于观察日当天')
+        early = item('2024-06-02T16:00:00+08:00')
+        self.assertIn('日期异常', early['text'])
+        self.assertNotIn('当天', early['text'])
+        self.assertIn('2024-06-02', early['text'])
+        self.assertIn('2024-06-03', early['text'])
+        self.assertIn(early['level'], ('warn', 'note'))
         self.assertEqual(item('2024-06-04T00:30:00')['text'], '未取得')
         self.assertEqual(item(None)['text'], '未取得')
         self.assertEqual(screen({'generated_at': '2024-06-04T00:30:00+08:00'})['backfill']['text'], '未取得')
+        self.assertEqual(item('not-a-date')['text'], '未取得')
 
     def test_ai_presence_names_the_model_without_calling_one(self):
-        self.assertEqual(screen({'ai': None})['ai']['text'], '仅程序计算，未调用 AI')
-        self.assertEqual(screen({'ai': {}})['ai']['text'], '仅程序计算，未调用 AI')
+        unknown = screen({'ai': None})['ai']
+        self.assertIn('状态未知', unknown['text'])
+        self.assertNotIn('未调用', unknown['text'])
+        empty = screen({'ai': {}})['ai']
+        self.assertIn('状态未知', empty['text'])
+        self.assertNotIn('未调用', empty['text'])
+        self.assertEqual(screen({'ai': None, 'model': None})['ai']['text'], '仅程序计算，未调用 AI')
         named = screen({'ai': {'overview': [{'text': '核对', 'evidence': ['T1']}]}, 'model': ' demo-model '})['ai']
         self.assertEqual(named['text'], '含 AI 解读（demo-model）')
         self.assertEqual(named['level'], 'note')

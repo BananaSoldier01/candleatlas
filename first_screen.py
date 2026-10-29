@@ -164,10 +164,10 @@ def _observation_day(report):
 
 
 def _backfill(report):
-    """只看当前这份的生成日是否晚于观察日。
+    """只看当前这份的生成日相对观察日。
 
     compare.py 的「基线事后补做」比较的是两份报告谁后生成。这里不沿用那个判据。
-    生成日早于观察日时，按「不晚于观察日」走「否：生成于观察日当天」。
+    生成日早于观察日标为日期异常。
     """
     obs = _observation_day(report)
     generated = _shanghai_day(report.get('generated_at')) if isinstance(report, dict) else None
@@ -175,17 +175,84 @@ def _backfill(report):
         return '未取得', 'note'
     if generated > obs:
         return '是：生成于观察日之后，不代表当时可知', 'warn'
-    return '否：生成于观察日当天', 'ok'
+    if generated == obs:
+        return '否：生成于观察日当天', 'ok'
+    return f'日期异常：生成日 {generated.isoformat()} 早于观察日 {obs.isoformat()}', 'warn'
 
 
-def _ai(report):
+def _row_text(row, key):
+    if not isinstance(row, dict):
+        return None
+    value = row.get(key)
+    return value if isinstance(value, str) else None
+
+
+def _model_label(value):
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _phase_is_model(phase):
+    if not isinstance(phase, str) or not phase:
+        return False
+    if '模型' in phase:
+        return True
+    return '解读' in phase and '技术' not in phase
+
+
+def _error_is_model_failure(error):
+    if not isinstance(error, str) or not error or '未调用' in error:
+        return False
+    return any(mark in error for mark in ('模型', '解读', 'AI'))
+
+
+def _unsafe_ai_reason(text):
+    if not isinstance(text, str) or not text:
+        return True
+    if '\n' in text or '\r' in text or '\t' in text or len(text) > 48:
+        return True
+    lowered = text.lower()
+    return any(mark in lowered for mark in (
+        'sk-', 'api_key', 'apikey', 'secret', 'token', 'bearer', 'traceback', '-----begin',
+    ))
+
+
+def _brief_ai_reason(error):
+    if _unsafe_ai_reason(error) or '未调用' in error:
+        return None
+    if not any(mark in error for mark in ('模型', '解读')):
+        return None
+    return error.strip().split('。')[0]
+
+
+def _ai_attempted(row, named_model):
+    if named_model:
+        return True
+    status = _row_text(row, 'status')
+    if status in ('partial', 'failed') and _error_is_model_failure(_row_text(row, 'error')):
+        return True
+    return _phase_is_model(_row_text(row, 'phase'))
+
+
+def _ai(report, row=None):
+    """区分「含 AI 结果」与「是否尝试调用」。字段不足时不断言未调用。"""
     if not isinstance(report, dict):
         return '未取得', 'note'
     if report.get('ai'):
-        model = report.get('model')
-        name = model.strip() if isinstance(model, str) and model.strip() else '未取得'
+        name = _model_label(report.get('model')) or '未取得'
         return f'含 AI 解读（{name}）', 'note'
-    return '仅程序计算，未调用 AI', 'ok'
+    named = _model_label(report.get('model')) if 'model' in report else None
+    status = _row_text(row, 'status')
+    if status == 'running' and (named or _phase_is_model(_row_text(row, 'phase'))):
+        return 'AI 解读生成中', 'note'
+    if _ai_attempted(row, named):
+        reason = _brief_ai_reason(_row_text(row, 'error'))
+        text = f'无可用 AI 解读（{reason}）' if reason else '无可用 AI 解读'
+        return text, 'warn'
+    if 'model' in report and report.get('model') is None:
+        return '仅程序计算，未调用 AI', 'ok'
+    return '无可用 AI 解读/状态未知', 'note'
 
 
 def disclosure_items(row, report, delta):
@@ -196,7 +263,7 @@ def disclosure_items(row, report, delta):
         _item('sample', '样本窗口', *_sample(data)),
         _item('baseline', '基线是否可比', *_baseline(delta)),
         _item('backfill', '当前这份是否事后补做', *_backfill(data)),
-        _item('ai', '是否含 AI', *_ai(data)),
+        _item('ai', '是否含 AI', *_ai(data, row)),
     ]
 
 

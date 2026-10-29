@@ -2,6 +2,9 @@
 const watchKey='guanshi.observations.v1';
 let observations=[],watchLoaded=false,reviewVersion=0;
 const reviewCache=new Map();
+function observationHTML(text){
+  return window.Privacy?Privacy.privateHTML(text,'observation-note',document.body.classList.contains('privacy-on')):`<p class="observation-note private-text">${esc(text)}</p>`;
+}
 const WATCH_METRICS=[['close','收盘价'],['ma5','MA5'],['ma10','MA10'],['ma20','MA20'],['ma60','MA60'],['rsi14','RSI14'],['volume_ratio5','较前5日均量'],['change1','当日涨跌'],['change20','近20日涨跌'],['bias20','偏离MA20'],['macd_hist','MACD柱']];
 const WATCH_METRIC_LABEL=Object.fromEntries(WATCH_METRICS);
 function formatPointNumber(n){
@@ -56,7 +59,7 @@ function renderWatch(){
   document.dispatchEvent(new Event('records-updated'));
   const rows=observations.filter(o=>o.active||$('show-archived').checked);
   $('watch-count').textContent=`关注 ${observations.filter(o=>o.active).length} 条 · 显示 ${rows.length} 条`;
-  $('watch-list').innerHTML=rows.length?rows.map(o=>`<article class="watch-card"><div class="watch-card-heading">${stockLink(o)}<button data-archive="${esc(o.id)}" data-archived="${o.active?1:0}">${o.active?'归档':'恢复关注'}</button></div><p class="observation-note">${esc(o.note)}</p>${pointListHTML(o.watch_points)}${o.report_id?`<button class="text-action" data-open-report="${esc(o.report_id)}">查看关联分析报告 →</button>`:''}<p class="footnote">观察日 ${esc(o.date)} · 记录于 ${esc(new Date(o.createdAt).toLocaleString('zh-CN'))}${o.date<new Date(o.createdAt).toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'})?' · 历史补记':''}</p><div class="followup-slot" id="review-${esc(o.id)}">${reviewCache.get(o.id+'|'+state.date)||'等待更新后续表现'}</div></article>`).join(''):'<p class="placeholder">从个股研究或线索清单加入关注，留下理由，在这里跟踪后续表现。</p>';
+  $('watch-list').innerHTML=rows.length?rows.map(o=>`<article class="watch-card"><div class="watch-card-heading">${stockLink(o)}<button data-archive="${esc(o.id)}" data-archived="${o.active?1:0}">${o.active?'归档':'恢复关注'}</button></div>${observationHTML(o.note)}${pointListHTML(o.watch_points)}${o.report_id?`<button class="text-action" data-open-report="${esc(o.report_id)}">查看关联分析报告 →</button>`:''}<p class="footnote">观察日 ${esc(o.date)} · 记录于 ${esc(new Date(o.createdAt).toLocaleString('zh-CN'))}${o.date<new Date(o.createdAt).toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'})?' · 历史补记':''}</p><div class="followup-slot" id="review-${esc(o.id)}">${reviewCache.get(o.id+'|'+state.date)||'等待更新后续表现'}</div></article>`).join(''):'<p class="placeholder">从个股研究或线索清单加入关注，留下理由，在这里跟踪后续表现。</p>';
 }
 async function updateReviews(){
   if(!watchLoaded||!state.date||!$('watch-journal').open)return;const token=++reviewVersion,date=state.date;
@@ -150,6 +153,7 @@ $('import-watch').addEventListener('change',async e=>{
 });
 document.addEventListener('workspace-selected',e=>{if(e.detail==='watch')updateReviews();else ++reviewVersion;});
 document.addEventListener('day-selected',()=>{renderWatch();if(location.hash==='#watch')updateReviews();});
+document.addEventListener('privacy-changed',renderWatch);
 (async()=>{
   try{let d=await api('observations');observations=d.items;watchLoaded=true;renderWatch();
     try{const old=JSON.parse(localStorage.getItem(watchKey)||'[]');if(Array.isArray(old)&&old.length){d=await saveObservation({action:'import',items:old});observations=d.items;$('watch-message').textContent='已合并旧浏览器记录，浏览器备份仍保留。';renderWatch();}}catch{$('watch-message').textContent='旧浏览器记录未能合并，原数据保留；本机记录可正常使用。';}

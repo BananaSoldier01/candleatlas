@@ -44,6 +44,25 @@ class DemoTests(unittest.TestCase):
     def test_report_roundtrip_is_deterministic(self):
         r=self.demo.report('600000.SH',self.demo.day);self.assertEqual(self.request('/api/analysis?id='+r['id'])[1],r);self.assertEqual(self.demo.report('600000.SH',self.demo.day),r)
 
+    def raw(self,path):
+        c=HTTPConnection('127.0.0.1',self.http.server_port,timeout=10)
+        c.request('GET',path);response=c.getresponse();body=response.read();status=response.status;c.close();return status,body
+    def test_workbench_shape_and_shell_stay_compatible(self):
+        status,data=self.request('/api/workbench?date='+self.demo.day)
+        self.assertEqual(status,200)
+        self.assertEqual(set(data),{'date','items','counts','future_records'})
+        self.assertEqual(data['counts'],{'stocks':3,'ready':3,'pending':0,'records':3})
+        self.assertTrue(data['items'] and all(item['status']=='ready' for item in data['items']))
+        self.assertEqual(self.request('/api/observations','POST',{})[0],403)
+        status,page=self.raw('/')
+        self.assertEqual(status,200)
+        text=page.decode()
+        for marker in ('id="attention-card"','id="privacy-toggle"','/label-rules.js','/privacy.js','/attention.js','/first-screen-view.js','/delta-display.js','仅遮挡屏幕显示，导出文件和本机记录不变'):
+            self.assertIn(marker,text)
+        for path in ('/label-rules.js','/privacy.js','/attention.js','/first-screen-view.js','/delta-display.js'):
+            code,body=self.raw(path)
+            self.assertEqual(code,200,path)
+            self.assertIn(b'use strict',body)
     def test_followup_review_is_optional_and_synthetic(self):
         observed=self.demo.observed(self.demo.day);day=self.demo.day
         status,plain=self.request(f'/api/followup?code=600000.SH&observed={observed}&date={day}')

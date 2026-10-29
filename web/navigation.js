@@ -25,7 +25,8 @@
   function resume(){
     if(!watchLoaded)return;
     const rows=observations.filter(o=>o.active).slice(0,3);
-    $('home-watch').innerHTML=rows.length?rows.map(o=>`<div class="resume-item">${stockLink(o)}<small>${esc(o.date)}</small><p>${esc(o.note)}</p></div>`).join(''):'<div class="resume-empty"><strong>把关注留在这里</strong><p>从榜单或线索选择股票，记录关注理由，下次打开就能继续跟踪。</p><button class="text-action" data-route="themes">寻找线索 →</button></div>';
+    $('home-watch').innerHTML=rows.length?rows.map(o=>`<div class="resume-item">${stockLink(o)}<small>${esc(o.date)}</small>${window.Privacy?Privacy.privateHTML(o.note,'resume-note',document.body.classList.contains('privacy-on')):`<p class="resume-note private-text">${esc(o.note)}</p>`}</div>`).join(''):'<div class="resume-empty"><strong>把关注留在这里</strong><p>从榜单或线索选择股票，记录关注理由，下次打开就能继续跟踪。</p><button class="text-action" data-route="themes">寻找线索 →</button></div>';
   }
-  document.addEventListener('records-updated',resume);resume();
+  document.addEventListener('records-updated',resume);
+  document.addEventListener('privacy-changed',resume);resume();
 })();

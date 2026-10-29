@@ -44,7 +44,7 @@
     return `<details id="analysis-evidence-${esc(r.id)}"><summary>${esc(r.id)} · ${esc(r.title)}</summary><p>${esc(text)}</p><small>${esc(r.source)}</small>${url?` <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">查看原文 ↗</a>`:''}</details>`;
   }
 
-  function assessmentHTML(a){
+  function assessmentHTML(a,notes){
     if(!a)return '<p class="footnote">此报告未保存技术画像；已有技术指标仍可查看。</p>';
     const labels={trend:'趋势',momentum:'动量',volume_coord:'量能配合',overheat:'过热/回撤风险'};
     const rows=Object.entries(labels).map(([key,label])=>{
@@ -53,7 +53,34 @@
       return `<div><small>${label}${key==='overheat'?' · 越高风险越高':''}</small><b>${score}<small> / 100</small></b><small>规则覆盖 ${coverage}${c.status==='partial'?' · 部分数据':''}</small></div>`;
     }).join('');
     const explanations=Object.values(a.components||{}).map(c=>`<li>${esc(c.explanation||'资料不足')}</li>`).join('');
-    return `<section class="technical-assessment"><h3>技术画像 <small>固定规则 · 分项查看</small></h3><div class="assessment-grid">${rows}</div><details><summary>分项解释与规则</summary><p class="footnote">规则 ${esc(a.rule_version||'')} · 行情截至 ${esc(a.asof||'未取得')} · ${esc(a.method_note||'')}</p><ul>${explanations}</ul></details><p class="footnote">技术画像不是上涨概率；风险分项低也不代表安全。</p></section>`;
+    const lines=Array.isArray(notes)?notes.filter(x=>x&&x.text):[];
+    const invalid=lines.length?`<h4>读法失效条件</h4><ul class="reading-notes">${lines.map(x=>`<li>${esc(x.text)}</li>`).join('')}</ul>`:'';
+    return `<section class="technical-assessment"><h3>技术画像 <small>固定规则 · 分项查看</small></h3><div class="assessment-grid">${rows}</div><details><summary>分项解释与规则</summary><p class="footnote">规则 ${esc(a.rule_version||'')} · 行情截至 ${esc(a.asof||'未取得')} · ${esc(a.method_note||'')}</p><ul>${explanations}</ul></details>${invalid}<p class="footnote">技术画像不是上涨概率；风险分项低也不代表安全。</p></section>`;
+  }
+  function deltaToneClass(r){
+    if(typeof DeltaDisplay!=='undefined'&&typeof DeltaDisplay.deltaToneClass==='function')return DeltaDisplay.deltaToneClass(r);
+    const hide=!!(r&&(r.hide_direction||r.display==='hidden_direction'||r.direction==='not_comparable'||r.direction==='window_sensitive'));
+    if(hide)return 'delta-na';
+    if(r&&r.metric_class==='price'&&r.direction==='up')return 'quote-up';
+    if(r&&r.metric_class==='price'&&r.direction==='down')return 'quote-down';
+    return '';
+  }
+  function processHTML(p){
+    if(!p||!Array.isArray(p.columns)||!p.columns.length)return '';
+    const rowDefs=Array.isArray(p.rows)&&p.rows.length?p.rows:[
+      {key:'method',label:'方法'},{key:'window',label:'窗口'},{key:'sample',label:'样本'},
+      {key:'ai',label:'是否含 AI'},{key:'backfilled',label:'是否事后补做'},{key:'prompt_version',label:'prompt_version'}];
+    const head=p.columns.map(c=>{
+      const tags=(c.marks||[]).map(m=>`<span class="delta-kind">${esc(m)}</span>`).join('');
+      const here=c.current?'<span class="delta-kind">本次</span>':'';
+      return `<th scope="col" data-process-id="${esc(c.id)}">${esc(c.day||'未记录')}${here}${tags}</th>`;
+    }).join('');
+    const body=rowDefs.map(def=>`<tr><th scope="row">${esc(def.label||def.key)}</th>${p.columns.map(c=>{
+      const cells=c.cells||{};
+      const text=Object.prototype.hasOwnProperty.call(cells,def.key)?cells[def.key]:'未记录';
+      return `<td>${esc(text==null||text===''?'未记录':text)}</td>`;
+    }).join('')}</tr>`).join('');
+    return `<details class="delta-process"><summary>过程对比 · 并排看每份报告怎么得出来的</summary><p class="footnote">只比较方法与取数范围，不比较结果好坏。</p><div class="delta-scroll"><table class="delta-table process-table"><thead><tr><th>项目</th>${head}</tr></thead><tbody>${body}</tbody></table></div></details>`;
   }
   function deltaHTML(d){
     const v=d&&d.delta; if(!v) return '';
@@ -62,16 +89,32 @@
     const body=rows.map(r=>{
       const hide=r.hide_direction||r.display==='hidden_direction'||r.direction==='not_comparable'||r.direction==='window_sensitive';
       const diffTxt=r.diff==null?'—':hide?(r.direction==='window_sensitive'?'窗口不同':'不可比'):(r.diff>0?'+':'')+value(r.diff);
-      const cls=hide?'delta-na':(r.direction==='up'?'delta-up':r.direction==='down'?'delta-down':'delta-flat');
-      return `<tr data-delta-metric="${esc(r.metric)}"><th scope="row">${esc(r.label||r.metric)}${r.note?`<small>${esc(r.note)}</small>`:''}</th><td>${value(r.old)}</td><td>${value(r.new)}</td><td class="${cls}">${esc(diffTxt)}</td></tr>`;
+      const cls=deltaToneClass(r);
+      const kind=r.kind_label?`<span class="delta-kind" data-kind="${esc(r.kind||'')}">${esc(r.kind_label)}</span>`:'';
+      return `<tr data-delta-metric="${esc(r.metric)}" data-metric-class="${esc(r.metric_class||'')}"><th scope="row">${kind}${esc(r.label||r.metric)}${r.note?`<small>${esc(r.note)}</small>`:''}</th><td>${value(r.old)}</td><td>${value(r.new)}</td><td${cls?` class="${cls}"`:''} data-delta-tone="${esc(cls)}">${esc(diffTxt)}</td></tr>`;
     }).join('');
-    return `<section class="report-delta"><h3>较上次变化 <small>${esc(status)}</small></h3><p class="footnote">${esc((v.reasons||[]).join('；')||'')}</p>${body?`<div class="delta-scroll"><table class="delta-table"><thead><tr><th>指标</th><th>此前</th><th>本次</th><th>变化</th></tr></thead><tbody>${body}</tbody></table></div>`:'<p class="empty-hint">暂无基线，保存后续报告后可查看变化。</p>'}</section>`;
+    const metrics=body?`<details class="delta-metrics" open><summary>数值变化（${rows.length}）</summary><div class="delta-scroll"><table class="delta-table"><thead><tr><th>指标</th><th>此前</th><th>本次</th><th>变化</th></tr></thead><tbody>${body}</tbody></table></div></details>`:'<p class="empty-hint">暂无基线，保存后续报告后可查看变化。</p>';
+    const noticeBlock=v.notices&&typeof v.notices==='object'?v.notices:null;
+    const notices=noticeBlock&&Array.isArray(noticeBlock.items)?noticeBlock.items:[];
+    const noticeSummary=noticeBlock&&typeof noticeBlock.summary==='string'?noticeBlock.summary:'';
+    const noticeShow=Boolean(noticeBlock&&(notices.length||noticeSummary));
+    const noticeOpen=noticeShow&&!notices.length?' open':'';
+    const noticeTitle=notices.length?`披露 / 公告材料变化（${notices.length}）`:'披露 / 公告材料变化';
+    const noticeList=notices.length?`<ul class="delta-notice-list">${notices.map(n=>`<li data-notice-id="${esc(n.id)}" data-notice-kind="${esc(n.kind||'')}"><span class="delta-kind">${esc(n.kind_label||'')}</span>${esc(n.title||n.id||'')} <small>${esc(n.notice_date||'')}</small></li>`).join('')}</ul>`:'';
+    const noticeHTML=noticeShow?`<details class="delta-notices"${noticeOpen}><summary>${noticeTitle}</summary><p class="footnote">${esc(noticeSummary||'只比较材料清单的变化，不判断利好或利空。')}</p>${noticeBlock.note?`<p class="footnote">${esc(noticeBlock.note)}</p>`:''}${noticeList}</details>`:'';
+    return `<section class="report-delta"><h3>较上次变化 <small>${esc(status)}</small></h3><p class="footnote">${esc((v.reasons||[]).join('；')||'')}</p>${metrics}${noticeHTML}${processHTML(v.process)}</section>`;
   }
   function render(d){
     current=d;busy=d.status==='running';controls();$('analysis-status').textContent=d.phase+(d.error?' · '+d.error:'');
     const p=d.report;if(!p){$('analysis-result').innerHTML='<p class="empty-hint">正在准备分析材料，可离开页面，任务会继续在本机执行。</p>';return;}
-    const t=p.technical;
-    $('analysis-result').innerHTML=`<div class="analysis-report-head"><div><h3>${esc(p.name)} · ${esc(p.date)} 分析</h3><p class="footnote">生成于 ${esc(new Date(d.created).toLocaleString('zh-CN'))} · ${p.model?'模型 '+esc(p.model):'仅程序计算'}${p.date!==state.date?' · 与当前观察日不同，以下为所选历史报告':''}</p></div><button id="analysis-observe" ${busy?'disabled':''}>关联到关注记录</button></div><h3>行情状态 <small>程序计算</small></h3>${t?`<p class="trend-label">${esc(t.trend)} · 连续有效样本 ${t.sample} 个交易日</p>${trendRules(t.trend)}<div class="analysis-facts">${Object.entries(names).map(([k,label])=>`<div><small>${label}</small><b>${value(t[k])}</b></div>`).join('')}</div>`:'<p class="empty-hint">行情未取得，本次无技术指标。</p>'}${assessmentHTML(p.assessment)}${deltaHTML(d)}${p.disclosures?`<section class="disclosure-panel"><h3>本次报告保存的披露资料</h3>${disclosureHTML(p.disclosures)}</section>`:""}<h3>综合解读 <small>AI 生成，需结合依据核对</small></h3>${p.ai?`<div class="analysis-sections">${Object.entries({overview:'当前状态',supporting:'支持关注的依据',opposing:'相反证据与风险',watch:'后续核对事项'}).map(([k,title])=>`<section><h4>${title}</h4>${p.ai[k].map(row=>`<p>${esc(row.text)}</p><div class="evidence-buttons">${row.evidence.map(id=>`<button data-evidence="${esc(id)}">依据 ${esc(id)}</button>`).join('')}</div>`).join('')}</section>`).join('')}</div>`:`<p class="analysis-no-ai">${busy?'正在准备或生成解读…':d.error?esc(d.error):'尚未生成 AI 解读。技术指标与材料已保存，可配置模型后手动生成。'}</p>`}<details class="analysis-limitations" open><summary>材料范围与缺失项</summary><ul>${p.limitations.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></details><div class="analysis-evidence"><h3>本次分析依据</h3>${p.evidence.map(evidenceHTML).join('')}</div><p class="footnote">引用编号已检查；引用存在不代表解释或推断必然正确。指标和报告用于研究核对，不是收益保证。</p>`;
+    const t=p.technical,view=globalThis.FirstScreenView;
+    const screen=view?view.firstScreenHTML(d.first_screen,d.gap_impacts):'';
+    const limits=Array.isArray(p.limitations)?p.limitations:[];
+    const limitHTML=view?view.limitationItems(limits,d.gap_impacts):limits.map(x=>`<li>${esc(x)}</li>`).join('');
+    const evidence=Array.isArray(p.evidence)?p.evidence:[];
+    const aiNote='<p class="footnote ai-evidence-note">证据类型只说明材料来自哪里，不代表该推断已被验证，也不是概率。</p>';
+    const sections=p.ai?`<div class="analysis-sections">${Object.entries({overview:'当前状态',supporting:'支持关注的依据',opposing:'相反证据与风险',watch:'后续核对事项'}).map(([k,title])=>`<section><h4>${title}</h4>${p.ai[k].map(row=>{const tagHTML=view?view.kindTagHTML(row.evidence,d.evidence_kinds):'';return `<p>${esc(row.text)}</p><div class="evidence-buttons">${row.evidence.map(id=>`<button data-evidence="${esc(id)}">依据 ${esc(id)}</button>`).join('')}${tagHTML}</div>`;}).join('')}</section>`).join('')}</div>`:`<p class="analysis-no-ai">${busy?'正在准备或生成解读…':d.error?esc(d.error):'尚未生成 AI 解读。技术指标与材料已保存，可配置模型后手动生成。'}</p>`;
+    $('analysis-result').innerHTML=`<div class="analysis-report-head"><div><h3>${esc(p.name)} · ${esc(p.date)} 分析</h3><p class="footnote">生成于 ${esc(new Date(d.created).toLocaleString('zh-CN'))} · ${p.model?'模型 '+esc(p.model):'仅程序计算'}${p.date!==state.date?' · 与当前观察日不同，以下为所选历史报告':''}</p></div><button id="analysis-observe" ${busy?'disabled':''}>关联到关注记录</button></div>${screen}<h3>行情状态 <small>程序计算</small></h3>${t?`<p class="trend-label">${esc(t.trend)} · 连续有效样本 ${t.sample} 个交易日</p>${trendRules(t.trend)}<div class="analysis-facts">${Object.entries(names).map(([k,label])=>`<div><small>${label}</small><b>${value(t[k])}</b></div>`).join('')}</div>`:'<p class="empty-hint">行情未取得，本次无技术指标。</p>'}${assessmentHTML(p.assessment,d.reading_notes)}${deltaHTML(d)}${p.disclosures?`<section class="disclosure-panel"><h3>本次报告保存的披露资料</h3>${disclosureHTML(p.disclosures)}</section>`:""}<h3>综合解读 <small>AI 生成，需结合依据核对</small></h3>${aiNote}${sections}<details class="analysis-limitations" open><summary>材料范围与缺失项</summary><ul>${limitHTML}</ul></details><div class="analysis-evidence"><h3>本次分析依据</h3>${evidence.map(evidenceHTML).join('')}</div><p class="footnote">引用编号已检查；引用存在不代表解释或推断必然正确。指标和报告用于研究核对，不是收益保证。</p>`;
   }
   async function report(id,token=version){
     clearTimeout(timer);pinnedId=id;

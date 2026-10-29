@@ -33,6 +33,7 @@ STATIC = {'/workbench.js': ('workbench.js', 'text/javascript'), '/chan.js': ('ch
 STATIC['/demo.js'] = ('demo.js', 'text/javascript')
 STATIC['/batch.js'] = ('batch.js', 'text/javascript')
 STATIC['/price-technical.js'] = ('price-technical.js', 'text/javascript')
+STATIC['/delta-display.js'] = ('delta-display.js', 'text/javascript')
 STATIC['/guide-content.js'] = ('guide-content.js', 'text/javascript')
 STATIC['/guide.js'] = ('guide.js', 'text/javascript')
 STATIC['/guide.css'] = ('guide.css', 'text/css')

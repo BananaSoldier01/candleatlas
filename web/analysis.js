@@ -56,6 +56,31 @@
     const invalid=lines.length?`<h4>读法失效条件</h4><ul class="reading-notes">${lines.map(x=>`<li>${esc(x.text)}</li>`).join('')}</ul>`:'';
     return `<section class="technical-assessment"><h3>技术画像 <small>固定规则 · 分项查看</small></h3><div class="assessment-grid">${rows}</div><details><summary>分项解释与规则</summary><p class="footnote">规则 ${esc(a.rule_version||'')} · 行情截至 ${esc(a.asof||'未取得')} · ${esc(a.method_note||'')}</p><ul>${explanations}</ul></details>${invalid}<p class="footnote">技术画像不是上涨概率；风险分项低也不代表安全。</p></section>`;
   }
+  function deltaToneClass(r){
+    if(typeof DeltaDisplay!=='undefined'&&typeof DeltaDisplay.deltaToneClass==='function')return DeltaDisplay.deltaToneClass(r);
+    const hide=!!(r&&(r.hide_direction||r.display==='hidden_direction'||r.direction==='not_comparable'||r.direction==='window_sensitive'));
+    if(hide)return 'delta-na';
+    if(r&&r.metric_class==='price'&&r.direction==='up')return 'quote-up';
+    if(r&&r.metric_class==='price'&&r.direction==='down')return 'quote-down';
+    return '';
+  }
+  function processHTML(p){
+    if(!p||!Array.isArray(p.columns)||!p.columns.length)return '';
+    const rowDefs=Array.isArray(p.rows)&&p.rows.length?p.rows:[
+      {key:'method',label:'方法'},{key:'window',label:'窗口'},{key:'sample',label:'样本'},
+      {key:'ai',label:'是否含 AI'},{key:'backfilled',label:'是否事后补做'},{key:'prompt_version',label:'prompt_version'}];
+    const head=p.columns.map(c=>{
+      const tags=(c.marks||[]).map(m=>`<span class="delta-kind">${esc(m)}</span>`).join('');
+      const here=c.current?'<span class="delta-kind">本次</span>':'';
+      return `<th scope="col" data-process-id="${esc(c.id)}">${esc(c.day||'未记录')}${here}${tags}</th>`;
+    }).join('');
+    const body=rowDefs.map(def=>`<tr><th scope="row">${esc(def.label||def.key)}</th>${p.columns.map(c=>{
+      const cells=c.cells||{};
+      const text=Object.prototype.hasOwnProperty.call(cells,def.key)?cells[def.key]:'未记录';
+      return `<td>${esc(text==null||text===''?'未记录':text)}</td>`;
+    }).join('')}</tr>`).join('');
+    return `<details class="delta-process"><summary>过程对比 · 并排看每份报告怎么得出来的</summary><p class="footnote">只比较方法与取数范围，不比较结果好坏。</p><div class="delta-scroll"><table class="delta-table process-table"><thead><tr><th>项目</th>${head}</tr></thead><tbody>${body}</tbody></table></div></details>`;
+  }
   function deltaHTML(d){
     const v=d&&d.delta; if(!v) return '';
     const status=v.status_text||v.status||'';
@@ -63,10 +88,14 @@
     const body=rows.map(r=>{
       const hide=r.hide_direction||r.display==='hidden_direction'||r.direction==='not_comparable'||r.direction==='window_sensitive';
       const diffTxt=r.diff==null?'—':hide?(r.direction==='window_sensitive'?'窗口不同':'不可比'):(r.diff>0?'+':'')+value(r.diff);
-      const cls=hide?'delta-na':(r.direction==='up'?'delta-up':r.direction==='down'?'delta-down':'delta-flat');
-      return `<tr data-delta-metric="${esc(r.metric)}"><th scope="row">${esc(r.label||r.metric)}${r.note?`<small>${esc(r.note)}</small>`:''}</th><td>${value(r.old)}</td><td>${value(r.new)}</td><td class="${cls}">${esc(diffTxt)}</td></tr>`;
+      const cls=deltaToneClass(r);
+      const kind=r.kind_label?`<span class="delta-kind" data-kind="${esc(r.kind||'')}">${esc(r.kind_label)}</span>`:'';
+      return `<tr data-delta-metric="${esc(r.metric)}" data-metric-class="${esc(r.metric_class||'')}"><th scope="row">${kind}${esc(r.label||r.metric)}${r.note?`<small>${esc(r.note)}</small>`:''}</th><td>${value(r.old)}</td><td>${value(r.new)}</td><td${cls?` class="${cls}"`:''} data-delta-tone="${esc(cls)}">${esc(diffTxt)}</td></tr>`;
     }).join('');
-    return `<section class="report-delta"><h3>较上次变化 <small>${esc(status)}</small></h3><p class="footnote">${esc((v.reasons||[]).join('；')||'')}</p>${body?`<div class="delta-scroll"><table class="delta-table"><thead><tr><th>指标</th><th>此前</th><th>本次</th><th>变化</th></tr></thead><tbody>${body}</tbody></table></div>`:'<p class="empty-hint">暂无基线，保存后续报告后可查看变化。</p>'}</section>`;
+    const metrics=body?`<details class="delta-metrics" open><summary>数值变化（${rows.length}）</summary><div class="delta-scroll"><table class="delta-table"><thead><tr><th>指标</th><th>此前</th><th>本次</th><th>变化</th></tr></thead><tbody>${body}</tbody></table></div></details>`:'<p class="empty-hint">暂无基线，保存后续报告后可查看变化。</p>';
+    const notices=v.notices&&Array.isArray(v.notices.items)?v.notices.items:[];
+    const noticeHTML=notices.length?`<details class="delta-notices"><summary>披露 / 公告材料变化（${notices.length}）</summary><p class="footnote">${esc(v.notices.summary||'只比较材料清单的变化，不判断利好或利空。')}</p>${v.notices.note?`<p class="footnote">${esc(v.notices.note)}</p>`:''}<ul class="delta-notice-list">${notices.map(n=>`<li data-notice-id="${esc(n.id)}" data-notice-kind="${esc(n.kind||'')}"><span class="delta-kind">${esc(n.kind_label||'')}</span>${esc(n.title||n.id||'')} <small>${esc(n.notice_date||'')}</small></li>`).join('')}</ul></details>`:'';
+    return `<section class="report-delta"><h3>较上次变化 <small>${esc(status)}</small></h3><p class="footnote">${esc((v.reasons||[]).join('；')||'')}</p>${metrics}${noticeHTML}${processHTML(v.process)}</section>`;
   }
   function render(d){
     current=d;busy=d.status==='running';controls();$('analysis-status').textContent=d.phase+(d.error?' · '+d.error:'');

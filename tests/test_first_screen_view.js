@@ -66,6 +66,9 @@ test('analysis render places the disclosure before the price section', () => {
   const render = src.slice(src.indexOf('function render'), src.indexOf('async function report'));
   assert.ok(render.indexOf('firstScreenHTML') < render.indexOf('行情状态'));
   assert.ok(render.indexOf('综合解读') < render.indexOf('${aiNote}'));
+  assert.ok(render.includes('${aiNote}${gateNote}${sections}'));
+  assert.ok(render.includes('（略※）表示数字未在所引新闻/披露中核到出处'));
+  assert.ok(render.indexOf('gateHit') < render.indexOf('gateNote'));
   assert.match(render, /证据类型只说明材料来自哪里，不代表该推断已被验证，也不是概率。/);
   assert.match(render, /kindTagHTML/);
   assert.match(render, /limitationItems/);

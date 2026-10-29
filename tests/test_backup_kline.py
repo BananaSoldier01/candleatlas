@@ -1,3 +1,4 @@
+import datetime as dt
 import inspect
 import json
 import unittest
@@ -5,7 +6,7 @@ import urllib.request
 
 from backup_kline import (
     PHRASE_NO_NET_BAOSTOCK, PHRASE_NO_NET_TENCENT, PHRASE_NO_PACKAGE, PHRASE_SUSPEND,
-    PHRASE_UNKNOWN, compare_daily, fetch_daily,
+    PHRASE_UNKNOWN, _window_start, compare_daily, fetch_daily,
 )
 from backup_calendar import fetch_calendar
 from market import DataError, Market
@@ -203,6 +204,8 @@ class BackupKlineTests(unittest.TestCase):
         self.assertFalse(diff['merged'])
         self.assertEqual(diff['left_source'], 'tencent')
         self.assertEqual(diff['right_source'], 'baostock')
+        self.assertEqual(diff['left_thscode'], '600000.SH')
+        self.assertEqual(diff['right_thscode'], '600000.SH')
         self.assertEqual(diff['only_left'], ['2024-01-02'])
         self.assertEqual(diff['only_right'], ['2024-01-04'])
         self.assertEqual(diff['value_diffs'], [
@@ -245,6 +248,175 @@ class BackupKlineTests(unittest.TestCase):
             fetch_daily('600000.SH', '2024-01-05', 5, source='eastmoney')
         with self.assertRaises(TypeError):
             fetch_daily('600000.SH', '2024-01-05', 5)
+
+    def test_rows_use_real_calendar_dates_inside_the_request_window(self):
+        # 闭区间端点按公历保留。源若返回周末日期，不在这里按交易日删掉。
+        end = '2024-03-01'
+        days = 3
+        start = _window_start(end, days)
+        before = (dt.date.fromisoformat(start) - dt.timedelta(days=1)).isoformat()
+        after = (dt.date.fromisoformat(end) + dt.timedelta(days=1)).isoformat()
+        tencent_rows = [
+            _row(before, '10', '10', '11', '9', '100'),
+            _row('2023-02-29', '10', '10', '11', '9', '100'),
+            _row(start, '10', '10.1', '11', '9', '100'),
+            _row('2024-02-29', '10', '10.2', '11', '9', '110'),
+            _row('2024-02-30', '10', '10.3', '11', '9', '120'),
+            _row(end, '10', '10.4', '11', '9', '130'),
+            _row(after, '10', '10.5', '11', '9', '140'),
+        ]
+        baostock_rows = [
+            _baostock('2024-02-30', '10', '10', '11', '9', '100', '0'),
+            _baostock(before, '10', '10', '11', '9', '100', '1'),
+            _baostock(start, '10', '10.1', '11', '9', '100', '1'),
+            _baostock('2024-02-29', '10', '10.2', '11', '9', '110', '1'),
+            _baostock(end, '10', '10.4', '11', '9', '130', '1'),
+            _baostock(after, '10', '10.5', '11', '9', '140', '1'),
+        ]
+
+        def fetch(url):
+            return _body('sh600000', tencent_rows)
+
+        def query(symbol, start_date, end_date, adjustflag):
+            return baostock_rows
+
+        tencent = fetch_daily('600000.SH', end, days, source='tencent', fetch_bytes=fetch)
+        baostock = fetch_daily('600000.SH', end, days, source='baostock', baostock_query=query)
+        for result in (tencent, baostock):
+            self.assertEqual([item['date'] for item in result['items']], [start, '2024-02-29', end])
+            self.assertTrue(any(gap.get('date') == '2024-02-30' and '日期无效' in gap['reason'] for gap in result['gaps']))
+            self.assertTrue(any(gap.get('date') == before and '超出请求区间' in gap['reason'] for gap in result['gaps']))
+            self.assertTrue(any(gap.get('date') == after and '超出请求区间' in gap['reason'] for gap in result['gaps']))
+            self.assertFalse(any(PHRASE_SUSPEND in gap['reason'] for gap in result['gaps']))
+            self.assertFalse(any(item['volume'] == 0 for item in result['items']))
+        self.assertTrue(any(gap.get('date') == '2023-02-29' and '日期无效' in gap['reason'] for gap in tencent['gaps']))
+        self.assertNotIn('2023-02-29', [item['date'] for item in tencent['items']])
+
+        with self.assertRaises(DataError):
+            fetch_daily('600000.SH', '2024-02-30', 1, source='tencent')
+
+        def leap(url):
+            return _body('sh600000', [_row('2024-02-29', '10', '10', '11', '9', '100')])
+
+        leap_day = fetch_daily('600000.SH', '2024-02-29', 1, source='tencent', fetch_bytes=leap)
+        self.assertEqual([item['date'] for item in leap_day['items']], ['2024-02-29'])
+
+    def test_shortfall_keeps_dated_gaps_inside_the_query(self):
+        def query(symbol, start, end, adjustflag):
+            return [
+                _baostock('2024-03-01', '', '', '', '', '', '0'),
+                _baostock('2024-03-04', '10', '10.5', '11', '9', '100', '1'),
+                _baostock('2024-03-05', '', '', '', '', '', '0'),
+                _baostock('2024-03-06', '10', '10.8', '11', '9.5', '120', '1'),
+                _baostock('2024-03-07', '10', '12', '11', '9', '80', '1'),
+            ]
+
+        result = fetch_daily('600000.SH', '2024-03-07', 5, source='baostock', baostock_query=query)
+        self.assertEqual([item['date'] for item in result['items']], ['2024-03-04', '2024-03-06'])
+        reasons = {gap.get('date'): gap['reason'] for gap in result['gaps'] if gap.get('date')}
+        self.assertIn(PHRASE_SUSPEND, reasons['2024-03-01'])
+        self.assertIn(PHRASE_SUSPEND, reasons['2024-03-05'])
+        self.assertIn('tradestatus=1', reasons['2024-03-07'])
+        self.assertNotIn(PHRASE_SUSPEND, reasons['2024-03-07'])
+        self.assertTrue(any(gap.get('date') is None and '有效日 K 为 2 根' in gap['reason'] for gap in result['gaps']))
+        self.assertFalse(any(item['volume'] == 0 for item in result['items']))
+
+        def fetch(url):
+            return _body('sh600000', [
+                _row('2024-03-01', '10', '12', '11', '9', '100'),
+                _row('2024-03-04', '10', '10.5', '11', '9', '80'),
+            ])
+
+        tencent = fetch_daily('600000.SH', '2024-03-04', 2, source='tencent', fetch_bytes=fetch)
+        self.assertEqual([item['date'] for item in tencent['items']], ['2024-03-04'])
+        self.assertTrue(any(gap.get('date') == '2024-03-01' and PHRASE_UNKNOWN in gap['reason'] for gap in tencent['gaps']))
+        self.assertFalse(any(PHRASE_SUSPEND in gap['reason'] for gap in tencent['gaps']))
+        self.assertTrue(any(gap.get('date') is None and '有效日 K 为 1 根' in gap['reason'] for gap in tencent['gaps']))
+
+        exact = fetch_daily('600000.SH', '2024-03-04', 1, source='tencent', fetch_bytes=fetch)
+        self.assertEqual([item['date'] for item in exact['items']], ['2024-03-04'])
+        self.assertTrue(any(gap.get('date') == '2024-03-01' and PHRASE_UNKNOWN in gap['reason'] for gap in exact['gaps']))
+        self.assertFalse(any('有效日 K 为' in gap['reason'] for gap in exact['gaps']))
+
+    def test_trim_hides_gaps_before_the_first_displayed_bar(self):
+        end = '2024-01-10'
+        days = 2
+        start = _window_start(end, days)
+        before = (dt.date.fromisoformat(start) - dt.timedelta(days=1)).isoformat()
+
+        def fetch(url):
+            return _body('sh600000', [
+                _row(before, '10', '10', '11', '9', '100'),
+                _row('2024-01-02', '10', '10', '11', '9', '100'),
+                _row('2024-01-03', '10', '12', '11', '9', '50'),
+                _row('2024-01-08', '10', '10', '11', '9', '100'),
+                _row('2024-01-09', '10', '12', '11', '9', '50'),
+                _row('2024-01-10', '10', '10.5', '11', '9.5', '80'),
+            ])
+
+        result = fetch_daily('600000.SH', end, days, source='tencent', fetch_bytes=fetch)
+        self.assertEqual([item['date'] for item in result['items']], ['2024-01-08', '2024-01-10'])
+        dates = [gap.get('date') for gap in result['gaps']]
+        self.assertIn('2024-01-09', dates)
+        self.assertNotIn('2024-01-03', dates)
+        self.assertNotIn(before, dates)
+        self.assertNotIn('2024-01-02', dates)
+        self.assertFalse(any('有效日 K 为' in gap['reason'] for gap in result['gaps']))
+        self.assertFalse(any(PHRASE_SUSPEND in gap['reason'] for gap in result['gaps']))
+        self.assertTrue(all(item['volume'] != 0 for item in result['items']))
+
+    def test_compare_requires_the_same_thscode(self):
+        item = {'date': '2024-01-05', 'open_price': 10, 'high_price': 11,
+                'low_price': 9, 'close_price': 10.5, 'volume': 100}
+        left = {'source': 'tencent', 'adjust': 'forward', 'thscode': '600000.SH',
+                'items': [dict(item)], 'gaps': [], 'notes': []}
+        right = {'source': 'baostock', 'adjust': 'forward', 'thscode': '600000.SH',
+                 'items': [dict(item)], 'gaps': [], 'notes': []}
+        diff = compare_daily(left, right)
+        self.assertEqual(diff['left_thscode'], '600000.SH')
+        self.assertEqual(diff['right_thscode'], '600000.SH')
+        self.assertEqual(diff['left_source'], 'tencent')
+        self.assertEqual(diff['right_source'], 'baostock')
+        self.assertEqual(diff['value_diffs'], [])
+        self.assertEqual(diff['only_left'], [])
+        self.assertFalse(diff['merged'])
+
+        other = dict(right, thscode='600519.SH', items=[dict(item)])
+        with self.assertRaises(DataError) as caught:
+            compare_daily(left, other)
+        message = str(caught.exception)
+        self.assertIn('600000.SH', message)
+        self.assertIn('600519.SH', message)
+        self.assertNotIn('value_diffs', message)
+
+        for broken in (
+            dict(right, thscode=None),
+            dict(right, thscode=''),
+            {key: value for key, value in right.items() if key != 'thscode'},
+        ):
+            with self.assertRaises(DataError):
+                compare_daily(left, broken)
+            with self.assertRaises(DataError):
+                compare_daily(broken, left)
+
+        shifted = dict(right, adjust='backward', items=[dict(item, close_price=11)])
+        compared = compare_daily(left, shifted)
+        self.assertEqual(compared['left_adjust'], 'forward')
+        self.assertEqual(compared['right_adjust'], 'backward')
+        self.assertEqual(compared['left_thscode'], '600000.SH')
+        self.assertEqual(compared['right_thscode'], '600000.SH')
+        self.assertEqual(compared['value_diffs'], [
+            {'date': '2024-01-05', 'field': 'close_price', 'left': 10.5, 'right': 11}])
+        self.assertTrue(any('不统一口径' in note for note in compared['notes']))
+        self.assertFalse(compared['merged'])
+        self.assertNotIn('items', compared)
+        self.assertEqual(left['items'][0]['close_price'], 10.5)
+        self.assertEqual(shifted['items'][0]['close_price'], 11)
+
+
+def _baostock(date, open_, close, high, low, volume, status):
+    return {'date': date, 'open': str(open_), 'high': str(high), 'low': str(low),
+            'close': str(close), 'volume': str(volume), 'tradestatus': status}
 
 
 class BackupCalendarTests(unittest.TestCase):

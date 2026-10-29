@@ -14,6 +14,11 @@
 复权结果字段 adjust 为 forward。成交量沿用上游原值，不换算，缺失不补零。
 不可与 HiThink 的 prices/historical 序列静默混用。
 
+请求窗口是闭区间 [start, end]。行日期必须是真实公历日；不存在的日期（例如 2024-02-30）
+和窗口外的日期写入 gaps，不进入 items。有效根数少于请求根数时，保留窗口内已经取到的缺口原因
+（含首根有效日 K 之前）。只有有效根数多于请求、裁掉更早的日子时，才隐藏展示窗口之前的缺口。
+compare_daily 要求两侧 thscode 存在且相同；成功结果带上左右代码。adjust 不同只记差异，不改价格。
+
 腾讯 qfqday 列顺序（本模块按此映射，不读第 7 列及以后）：
 0 date，1 open，2 close，3 high，4 low，5 volume。
 分别写入 date / open_price / close_price / high_price / low_price / volume。
@@ -49,16 +54,24 @@ _BASE_NOTES = (
 )
 
 
-def parse_day(value, label='日期'):
+def _calendar_day(value):
+    """Return YYYY-MM-DD when value is a real calendar date, else None."""
     if not isinstance(value, str) or not _DAY.fullmatch(value):
-        raise DataError(f'{label}无效。')
+        return None
     try:
         day = dt.date.fromisoformat(value)
     except ValueError:
-        raise DataError(f'{label}无效。') from None
+        return None
     if day.isoformat() != value:
-        raise DataError(f'{label}无效。')
+        return None
     return value
+
+
+def parse_day(value, label='日期'):
+    day = _calendar_day(value)
+    if day is None:
+        raise DataError(f'{label}无效。')
+    return day
 
 
 def load_baostock(loader=None):
@@ -95,15 +108,22 @@ def fetch_daily(code, end, days=60, *, source, allow_network=False, fetch_bytes=
         return _pack(source, code, [], [{'date': None, 'reason': reason}], _notes(source))
     start = _window_start(end, days)
     if source == 'tencent':
-        return _finalize(source, code, end, days, *_tencent(code, start, end, days, allow_network, fetch_bytes))
-    return _finalize(source, code, end, days, *_baostock_k(
+        return _finalize(source, code, start, end, days, *_tencent(code, start, end, days, allow_network, fetch_bytes))
+    return _finalize(source, code, start, end, days, *_baostock_k(
         code, start, end, allow_network, baostock_query, baostock_loader))
 
 
 def compare_daily(left, right):
-    """并列两份已经取回的日 K。不合并 items，不补缺，不改任何一侧的价格。"""
+    """并列两份已经取回的日 K。不合并 items，不补缺，不改任何一侧的价格。
+
+    两侧 thscode 必须存在且相同，否则拒绝。adjust 保持各侧原样，不统一口径。
+    """
     if not isinstance(left, dict) or not isinstance(right, dict):
         raise DataError('对比需要两份备源结果。')
+    left_code = _require_thscode(left, '左侧')
+    right_code = _require_thscode(right, '右侧')
+    if left_code != right_code:
+        raise DataError(f'两侧 thscode 不同（{left_code} 与 {right_code}），不能并列对比。')
     left_map = _item_map(left.get('items'))
     right_map = _item_map(right.get('items'))
     diffs = []
@@ -114,12 +134,20 @@ def compare_daily(left, right):
                               'right': right_map[day].get(field)})
     return {
         'left_source': left.get('source'), 'right_source': right.get('source'),
+        'left_thscode': left_code, 'right_thscode': right_code,
         'left_adjust': left.get('adjust'), 'right_adjust': right.get('adjust'),
         'only_left': sorted(set(left_map) - set(right_map)),
         'only_right': sorted(set(right_map) - set(left_map)),
         'value_diffs': diffs, 'merged': False,
         'notes': ['并列差异，未把两源拼成一条序列。', 'adjust 与 source 保持各侧原样，不统一口径。'],
     }
+
+
+def _require_thscode(result, side):
+    code = result.get('thscode')
+    if not isinstance(code, str) or not _CODE.fullmatch(code):
+        raise DataError(f'{side}缺少可核对的 thscode，不能并列对比。')
+    return code
 
 
 def _item_map(items):
@@ -150,25 +178,42 @@ def _pack(source, code, items, gaps, notes):
             'gaps': gaps, 'notes': list(notes)}
 
 
-def _finalize(source, code, end, days, items, gaps, notes):
+def _range_gap(date, start, end):
+    return {'date': date,
+            'reason': f'日期 {date} 超出请求区间 {start} 至 {end}，已剔除，不作为有效日 K。'}
+
+
+def _invalid_date_gap(value):
+    shown = value if isinstance(value, str) and _DAY.fullmatch(value) else None
+    return {'date': shown, 'reason': f'不合格行已剔除，不补零。日期无效。{PHRASE_UNKNOWN}。'}
+
+
+def _finalize(source, code, start, end, days, items, gaps, notes):
+    # 查询窗口是闭区间 [start, end]。请求根数只在有效日 K 超额时裁掉更早的日子。
+    # 根数不足或刚好够时，保留窗口内已经取得的缺口，包括首根有效日 K 之前的原因。
     kept, seen = [], set()
     for item in sorted(items, key=lambda row: row['date']):
-        if item['date'] > end:
+        if item['date'] < start or item['date'] > end:
+            gaps.append(_range_gap(item['date'], start, end))
             continue
         if item['date'] in seen:
             gaps.append({'date': item['date'], 'reason': '重复日期已剔除，未合并。'})
             continue
         seen.add(item['date'])
         kept.append(item)
+    trimmed = False
     if len(kept) > days:
         kept = kept[-days:]
-    start_keep = kept[0]['date'] if kept else None
+        trimmed = True
+    display_start = kept[0]['date'] if kept else None
     visible = []
     for gap in gaps:
         gdate = gap.get('date')
-        if gdate and gdate > end:
-            continue
-        if gdate and start_keep and gdate < start_keep:
+        real = _calendar_day(gdate) if isinstance(gdate, str) else None
+        if real and (real < start or real > end) and '超出请求区间' not in (gap.get('reason') or ''):
+            gap = _range_gap(real, start, end)
+            real = gap['date']
+        if trimmed and real and display_start and real < display_start:
             continue
         visible.append(gap)
     if len(kept) < days:
@@ -266,9 +311,9 @@ def _tencent_rows(payload, symbol, notes):
 def _tencent_row(row):
     if not isinstance(row, (list, tuple)) or len(row) < 6:
         return None, {'date': None, 'reason': f'不合格行已剔除，不补零。{PHRASE_UNKNOWN}。'}
-    date = row[0] if isinstance(row[0], str) and _DAY.fullmatch(row[0]) else None
+    date = _calendar_day(row[0])
     if date is None:
-        return None, {'date': None, 'reason': f'不合格行已剔除，不补零。日期无效。{PHRASE_UNKNOWN}。'}
+        return None, _invalid_date_gap(row[0])
     try:
         open_price, close_price = _num(row[1]), _num(row[2])
         high_price, low_price, volume = _num(row[3]), _num(row[4]), _num(row[5])
@@ -337,9 +382,9 @@ def _pull_baostock_k(module, symbol, start, end):
 def _baostock_row(row):
     if not isinstance(row, dict):
         return None, {'date': None, 'reason': f'不合格行已剔除，不补零。{PHRASE_UNKNOWN}。'}
-    date = row.get('date')
-    if not isinstance(date, str) or not _DAY.fullmatch(date):
-        return None, {'date': None, 'reason': f'不合格行已剔除，不补零。日期无效。{PHRASE_UNKNOWN}。'}
+    date = _calendar_day(row.get('date'))
+    if date is None:
+        return None, _invalid_date_gap(row.get('date'))
     status = row.get('tradestatus')
     status_text = '' if status is None else str(status).strip()
     if status_text and status_text != '1':

@@ -21,6 +21,7 @@ from report_batch import BatchService
 from batch import BatchError
 from chan_structure import for_market as chan_for_market
 from disclosures import DisclosureStore
+from em_market_backup import fetch_limit_pool, fetch_market_breadth, synthetic_demo
 
 STATIC = {'/workbench.js': ('workbench.js', 'text/javascript'), '/chan.js': ('chan.js', 'text/javascript'), '/analysis.js': ('analysis.js', 'text/javascript'), '/navigation.js': ('navigation.js', 'text/javascript'), '/overview.js': ('overview.js', 'text/javascript'), '/tracking.js': ('tracking.js', 'text/javascript'), '/theme-clues.js': ('theme-clues.js', 'text/javascript'), '/clues.js': ('clues.js', 'text/javascript'), '/news.js': ('news.js', 'text/javascript'), '/': ('index.html', 'text/html'), '/app.js': ('app.js', 'text/javascript'),
           '/workspace.js': ('workspace.js', 'text/javascript'),
@@ -152,6 +153,31 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             self.send(500, {'error': '同步失败，已有归档保留'})
 
+    def backup_em_pools(self, query):
+        """East Money comparison only. Does not read or write market.research."""
+        kind = query.get('kind', ['up'])[0]
+        day = query.get('date', [''])[0]
+        flag = query.get('allow_network', ['0'])[0]
+        if flag not in ('0', '1'):
+            return self.send(400, {'error': 'allow_network 只能是 0 或 1。'})
+        demo = getattr(self.server, 'demo', None) is not None
+        if demo and flag == '1':
+            return self.send(403, {'error': '演示模式不连接东方财富。', 'reason': 'demo_read_only'})
+        try:
+            if demo:
+                result = synthetic_demo(kind, day or None)
+            elif kind == 'breadth':
+                result = fetch_market_breadth(allow_network=flag == '1')
+                if day:
+                    result['notes'] = [*result['notes'], '请求中的 date 已忽略：涨跌分布不认历史日。']
+            else:
+                if not day:
+                    return self.send(400, {'error': '请提供 date=YYYY-MM-DD。'})
+                result = fetch_limit_pool(day, kind, allow_network=flag == '1')
+        except ValueError as error:
+            return self.send(400, {'error': str(error)})
+        return self.send(200, result)
+
     def do_GET(self):
         port = self.server.server_port
         if self.headers.get('Host') not in (f'127.0.0.1:{port}', f'localhost:{port}'):
@@ -165,6 +191,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, (ROOT / 'web' / name).read_bytes(), kind)
         query = parse_qs(parsed.query)
         try:
+            if parsed.path == '/api/backup/em-pools':
+                return self.backup_em_pools(query)
             if getattr(self.server,'demo',None) is not None and parsed.path.startswith('/api/'):
                 return self.send(200,self.server.demo.get(parsed.path,query))
             if parsed.path=='/api/runtime':return self.send(200,{'mode':'live','read_only':False,'synthetic':False})

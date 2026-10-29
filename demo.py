@@ -4,6 +4,7 @@ import math
 
 from analysis import technical
 from compare import compare_reports
+from first_screen import attach_disclosure
 from reading_notes import invalidation_lines
 from report_compare import delta_view
 from tech_score import evaluate
@@ -75,7 +76,9 @@ class Demo:
         if i>0:
             old_day=self.market.dates[i-1];old=dict(p,date=old_day,technical=technical(self.market.prices(code,old_day,250)['items']))
         raw=compare_reports(old,p);view=delta_view(raw);view['raw']=raw
-        return dict(id='demo-'+code+'-'+day,code=code,day=day,created=p['generated_at'],status='complete',phase='合成技术样例 · 只读',report=p,error=None,delta=view,reading_notes=invalidation_lines(p))
+        result=dict(id='demo-'+code+'-'+day,code=code,day=day,created=p['generated_at'],status='complete',phase='合成技术样例 · 只读',report=p,error=None,delta=view,reading_notes=invalidation_lines(p))
+        attach_disclosure(result)
+        return result
     def observed(self,day):
         dates=self.market.dates
         if day not in dates:return day

@@ -107,6 +107,10 @@ class Analysis:
         except Exception:
             d['delta']=None
         try:
+            from first_screen import attach_disclosure;attach_disclosure(d)
+        except Exception:
+            pass
+        try:
             from reading_notes import invalidation_lines
             d['reading_notes']=invalidation_lines(d.get('report') or {})
         except Exception:

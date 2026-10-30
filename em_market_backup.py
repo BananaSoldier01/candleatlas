@@ -122,6 +122,14 @@ def _envelope(kind, day, items, gaps, notes):
     }
 
 
+def _pool_metadata(value, requested_day, *, date_basis='unverified', upstream_qdate=None):
+    """所有名单返回路径的默认契约；成功解析后才能将 list_complete 改为 True。"""
+    value.update(requested_day=requested_day, date_basis=date_basis,
+                 upstream_qdate=upstream_qdate, list_complete=False,
+                 latest_price_unit='CNY')
+    return value
+
+
 def _acquire(clock, sleeper):
     global _LAST_REQUEST_AT
     now = clock()
@@ -195,6 +203,8 @@ def _load_body(body, shown):
         payload = json.loads(text)
     except json.JSONDecodeError:
         return None, [f'响应不是 JSON。试过的路径：{shown}。未改试其他来源。']
+    if payload is None:
+        return None, [f'响应为 JSON null。试过的路径：{shown}。未改试其他来源。']
     return payload, []
 
 
@@ -375,11 +385,8 @@ def _parse_pool(payload, kind, requested_day, shown):
     date_basis, upstream_qdate = 'unverified', None
 
     def result(day, items, gaps, notes):
-        value = _envelope(kind, day, items, gaps, notes)
-        value.update(requested_day=requested_day, date_basis=date_basis,
-                     upstream_qdate=upstream_qdate, list_complete=False,
-                     latest_price_unit='CNY')
-        return value
+        return _pool_metadata(_envelope(kind, day, items, gaps, notes), requested_day,
+                              date_basis=date_basis, upstream_qdate=upstream_qdate)
     gaps = []
     notes = [PRICE_NOTE]
     if not isinstance(payload, dict):
@@ -428,6 +435,8 @@ def _parse_pool(payload, kind, requested_day, shown):
             ], notes)
     if explicit_day is not None:
         verified_day, date_basis = explicit_day, 'response_date'
+        if upstream_qdate is None:
+            gaps.append('响应名单日期匹配，但缺少 qdate，近期窗口未核验；仅保留行供排查，不标完整名单。')
     elif upstream_qdate is not None:
         verified_day, date_basis = requested_day, 'portal_date_parameter'
         notes.append('名单日依据门户 date 请求参数，非响应日期回显；上游 qdate 单独保留，不当作历史名单日期。')
@@ -453,7 +462,7 @@ def _parse_pool(payload, kind, requested_day, shown):
         tc_matches = True
     if len(pool) >= PAGE_SIZE:
         gaps.append(f'本页条数达到 pagesize={PAGE_SIZE} 上限，未自动翻页，名单可能不完整。')
-    if verified_day is not None and len(pool) == 0 and tc_matches:
+    if verified_day is not None and upstream_qdate is not None and len(pool) == 0 and tc_matches:
         notes.append('上游 pool 为空，日期依据已列明，tc 与条数一致，按空池记录。')
     elif verified_day is not None and len(pool) == 0 and total is None:
         notes.append('上游 pool 为空，但未给出 tc，不把缺失记成已核对的零家。')
@@ -471,7 +480,7 @@ def _parse_pool(payload, kind, requested_day, shown):
         seen.add(parsed['thscode'])
         items.append(parsed)
     value = result(verified_day, items, gaps, notes)
-    value['list_complete'] = (verified_day is not None and tc_matches
+    value['list_complete'] = (verified_day is not None and upstream_qdate is not None and tc_matches
                               and len(items) == len(pool) and len(pool) < PAGE_SIZE)
     return value
 
@@ -672,11 +681,14 @@ def _parse_breadth(payload, shown):
     if unknown_fields:
         up = down = flat = None
         gaps.append('出现图例之外的字段，统计范围未核验，暂停汇总。')
-    if up is not None and down is not None and flat is not None:
+    if day is not None and up is not None and down is not None and flat is not None:
         sample = up + down + flat
     else:
         sample = None
-        notes.append('涨跌分布不完整，已保留的桶是部分结果；未知方向未补 0，sample 不把未知当成 0。')
+        if day is None:
+            notes.append('快照日期未核验，sample 留空；已保留的分桶及方向小计不能绑定观察日。')
+        else:
+            notes.append('涨跌分布不完整，已保留的桶是部分结果；未知方向未补 0，sample 不把未知当成 0。')
     item = {
         'bins': bins, 'up': up, 'down': down, 'flat': flat, 'sample': sample,
         'bin_labels': {key: BREADTH_LABELS[key] for key in bins},
@@ -699,16 +711,16 @@ def fetch_limit_pool(day, kind='up', *, allow_network=False, fetch_bytes=None, f
     if fetch_bytes is not None:
         payload, gaps = _load_body(fetch_bytes, shown)
         if payload is None:
-            return _envelope(kind, None, [], gaps, [])
+            return _pool_metadata(_envelope(kind, None, [], gaps, []), iso)
         return _parse_pool(payload, kind, iso, shown)
     if not allow_network:
-        return _envelope(kind, None, [], [
+        return _pool_metadata(_envelope(kind, None, [], [
             f'未联网：allow_network 为 false，且没有提供响应字节。未请求 {shown}。'
-        ], [])
+        ], []), iso)
     request_url, shown = _pool_urls(kind, compact)
     loaded = _read_remote(kind, None, request_url, shown, fetch, clock, sleeper)
     if isinstance(loaded, _Gap):
-        return loaded.envelope
+        return _pool_metadata(loaded.envelope, iso)
     return _parse_pool(loaded, kind, iso, shown)
 
 
@@ -834,11 +846,11 @@ def synthetic_demo(kind, day=None):
         },
     ]
     compared = compare_pools(primary, backup)
-    return {
+    return _pool_metadata({
         **base,
         'day': iso,
         'items': backup,
         'gaps': [],
         'notes': [STATUS_NOTE, SEPARATE_NOTE, notice, '合成主源只含 600000.SH 与 000001.SZ；合成备源只含 000001.SZ 与 920001.BJ。'],
         'compare': compared,
-    }
+    }, iso, date_basis='synthetic_demo')

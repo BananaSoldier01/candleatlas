@@ -49,6 +49,41 @@ class PoolTests(unittest.TestCase):
         self.assertGreaterEqual(em.MIN_INTERVAL_SECONDS, 1)
         self.assertIn(str(int(em.MIN_INTERVAL_SECONDS)), result['rate_limit_note'])
 
+    def test_pool_metadata_is_present_on_every_failure_path(self):
+        def fail_fetch(_url):
+            raise OSError('synthetic failure')
+
+        cases = (
+            ('offline', {}),
+            ('bad_json', {'fetch_bytes': b'{bad json'}),
+            ('bad_encoding', {'fetch_bytes': b'\xff'}),
+            ('json_null', {'fetch_bytes': b'null'}),
+            ('json_list', {'fetch_bytes': b'[]'}),
+            ('rc_error', {'fetch_bytes': b'{"rc":1}'}),
+            ('data_missing', {'fetch_bytes': b'{}'}),
+            ('data_null', {'fetch_bytes': b'{"data":null}'}),
+            ('data_wrong_shape', {'fetch_bytes': b'{"data":[] }'}),
+            ('fetch_error', {'allow_network': True, 'fetch': fail_fetch}),
+            ('fetched_bad_json', {'allow_network': True, 'fetch': lambda _url: b'bad json'}),
+            ('fetched_non_bytes', {'allow_network': True, 'fetch': lambda _url: 'not bytes'}),
+        )
+        for kind in ('up', 'break', 'down'):
+            for label, kwargs in cases:
+                with self.subTest(kind=kind, case=label), patch('em_market_backup._http_get', side_effect=AssertionError('no network')):
+                    value = em.fetch_limit_pool(DAY, kind, clock=lambda: 0,
+                                                sleeper=lambda _seconds: None, **kwargs)
+                    # 模拟调用方直接索引以及 HTTP JSON 序列化，不能依赖 .get() 掩盖漏字段。
+                    value = json.loads(json.dumps(value))
+                    self.assertIs(value['list_complete'], False)
+                    self.assertEqual(value['date_basis'], 'unverified')
+                    self.assertEqual(value['requested_day'], DAY)
+                    self.assertIsNone(value['upstream_qdate'])
+                    self.assertEqual(value['latest_price_unit'], 'CNY')
+                    self.assertIsNone(value['day'])
+                    self.assertEqual(value['items'], [])
+                    self.assertTrue(value['gaps'])
+                    self.assertEqual(value['kind'], kind)
+
     def test_bad_switches_do_not_connect(self):
         def boom(*_a, **_k):
             raise AssertionError('network forbidden')
@@ -206,7 +241,7 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(flat['items'][0]['flat'], 0)
         self.assertIsNone(flat['items'][0]['down'])
         self.assertIsNone(flat['items'][0]['sample'])
-        self.assertTrue(any('部分' in note or '不完整' in note for note in flat['notes']))
+        self.assertTrue(any('快照日期未核验' in note for note in flat['notes']))
 
     def test_redirect_off_host_stops(self):
         class Request:
@@ -272,6 +307,12 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(explicit['day'], DAY)
         self.assertEqual(explicit['date_basis'], 'response_date')
         self.assertEqual(parse(date=20261029)['date_basis'], 'response_date')
+        date_only = parse(day='2000-01-01', date=20000101)
+        self.assertEqual(date_only['day'], '2000-01-01')
+        self.assertEqual(date_only['date_basis'], 'response_date')
+        self.assertIsNone(date_only['upstream_qdate'])
+        self.assertFalse(date_only['list_complete'])
+        self.assertTrue(any('窗口未核验' in gap for gap in date_only['gaps']))
         for date in (20261028, 20261030):
             rejected = parse(date=date, qdate=20261030)
             self.assertEqual(rejected['items'], [])
@@ -338,6 +379,10 @@ class PoolTests(unittest.TestCase):
         value = em.fetch_limit_pool(DAY, fetch_bytes=b'{"data":{"qdate":20261030,"tc":0,"pool":[]}}')
         self.assertTrue(value['list_complete'])
         self.assertEqual(value['items'], [])
+        date_only_empty = em.fetch_limit_pool(DAY, fetch_bytes=b'{"data":{"date":20261029,"tc":0,"pool":[]}}')
+        self.assertFalse(date_only_empty['list_complete'])
+        self.assertTrue(any('窗口未核验' in g for g in date_only_empty['gaps']))
+        self.assertFalse(any('按空池记录' in n for n in date_only_empty['notes']))
 
     def test_missing_data_is_not_a_verified_empty_pool(self):
         row = {'c': '600000', 'm': 1, 'n': '合成甲'}
@@ -439,7 +484,17 @@ class PoolTests(unittest.TestCase):
         undated = parse(full, qdate=None)
         self.assertIsNone(undated['day'])
         self.assertFalse(undated['items'][0]['complete'])
+        self.assertIsNone(undated['items'][0]['sample'])
         self.assertTrue(undated['gaps'])
+        self.assertEqual(undated['items'][0]['bins'], full)
+        for dates in ({}, {'qdate': 'bad'}, {'qdate': None}):
+            value = em.fetch_market_breadth(fetch_bytes=json.dumps({
+                'data': {'fenbu': full, **dates},
+            }).encode())
+            self.assertIsNone(value['day'])
+            self.assertIsNone(value['items'][0]['sample'])
+            self.assertFalse(value['items'][0]['complete'])
+            self.assertEqual(value['items'][0]['bins'], full)
 
     def test_breadth_conflicts_invalid_and_unknown_fields_do_not_get_summed(self):
         def parse(fenbu):
@@ -538,6 +593,24 @@ class ApiTests(unittest.TestCase):
         status = response.status
         connection.close()
         return status, json.loads(body)
+
+    def test_failure_metadata_survives_http(self):
+        for kind in ('up', 'break', 'down'):
+            for case in ('offline', 'bad_json', 'fetch_error'):
+                with self.subTest(kind=kind, case=case):
+                    failure = OSError('synthetic fetch failure') if case == 'fetch_error' else None
+                    with patch('em_market_backup._http_get', return_value=b'{bad', side_effect=failure), patch('em_market_backup._acquire'):
+                        flag = '' if case == 'offline' else '&allow_network=1'
+                        status, body = self.request(f'/api/backup/em-pools?date={DAY}&kind={kind}{flag}')
+                    self.assertEqual(status, 200)
+                    self.assertIs(body['list_complete'], False)
+                    self.assertEqual(body['date_basis'], 'unverified')
+                    self.assertEqual(body['requested_day'], DAY)
+                    self.assertIsNone(body['upstream_qdate'])
+                    self.assertEqual(body['latest_price_unit'], 'CNY')
+                    self.assertIsNone(body['day'])
+                    self.assertEqual(body['items'], [])
+                    self.assertTrue(body['gaps'])
 
     def test_live_route_stays_offline_until_flag_and_uses_one_host(self):
         def boom(*_a, **_k):
@@ -655,6 +728,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload['source'], 'synthetic-demo')
         self.assertTrue(payload['synthetic'])
+        self.assertEqual(payload['requested_day'], day)
+        self.assertEqual(payload['date_basis'], 'synthetic_demo')
+        self.assertFalse(payload['list_complete'])
+        self.assertIsNone(payload['upstream_qdate'])
+        self.assertEqual(payload['latest_price_unit'], 'CNY')
         self.assertEqual(payload['compare']['both'], ['000001.SZ'])
         self.assertEqual(payload['compare']['only_primary'], ['600000.SH'])
         self.assertEqual(payload['compare']['only_backup'], ['920001.BJ'])
@@ -664,6 +742,13 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(wide, 200)
         self.assertIsNone(breadth['day'])
         self.assertTrue(any('已忽略' in note for note in breadth['notes']))
+        for kind in ('up', 'break', 'down'):
+            value = em.synthetic_demo(kind, day)
+            self.assertEqual(value['requested_day'], day)
+            self.assertEqual(value['date_basis'], 'synthetic_demo')
+            self.assertFalse(value['list_complete'])
+            self.assertIsNone(value['upstream_qdate'])
+            self.assertEqual(value['latest_price_unit'], 'CNY')
 
 
 if __name__ == '__main__':

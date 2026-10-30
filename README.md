@@ -93,6 +93,14 @@ python3 server.py
 
 同花顺 Key 仍是日 K 与交易日历的主路径。仓库另有可选、默认不联网的免 Key 备源库（腾讯前复权日 K，以及可选的 baostock 日 K / 交易日历），只在调用方显式选源时使用，不会在缺少 Key 时自动切换。教学对照，不进入演示拉数。用途和条款风险见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
+### 可选对照：东方财富涨停池（默认关闭）
+
+`em_market_backup.py` 只在调用方把 `allow_network=True` 时，才访问东方财富门户的涨停、炸板、跌停名单和当日涨跌分布。它用来对照代码集合或家数，**不会**在同花顺失败时自动顶上，也**不会**把结果写进短线温度、炸板率或研究摘要。演示模式只给合成对照表；带 `allow_network=1` 会直接拒绝。
+
+已核对近期名单的日期参数、跌停池排序、价格单位和分布图例。名单日与上游 `qdate` 分开保留；名单不完整或分布缺桶时明确提示，不补零。具体范围与输出字段见[接口契约](docs/EM_MARKET_CONTRACT.md)。
+
+这条备源的风险高于交易所/指数公司官方文件，也高于可选的 baostock 日 K：它不是官方接口，需要自行限速，许可待审，取回的内容不得再分发。维护者复核前不要打开真实拉取。公开 URL、页面 `ut` 参数或客户端 1 秒限速不等于已取得使用或再分发许可；须结合东方财富[法律声明](https://about.eastmoney.com/home/disclaimer)与[服务协议](https://about.eastmoney.com/home/protocol)核对事先书面许可等要求。代码修好也不等于真实拉取、对外展示或再分发获准。说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 <a id="contribute"></a>
 
 ## 当前阶段：欢迎试用，也欢迎指出不好用的地方

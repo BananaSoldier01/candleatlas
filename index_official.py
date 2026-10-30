@@ -270,7 +270,16 @@ def _parse_payload(payload, *, kind, index_code, url):
         text = _decode(payload)
     except UnicodeError:
         return {"items": [], "as_of": None, "gaps": ["文件无法按 UTF-8、UTF-16 或 GB18030 解码。未改试其他来源。"], "notes": []}
-    tables, layout = _tables_from_text(text)
+    try:
+        tables, layout = _tables_from_text(text)
+    except csv.Error as exc:
+        reason = _public_error(exc)
+        return {
+            "items": [],
+            "as_of": None,
+            "gaps": [f"CSV 解析失败（{reason}）。官方文件路径：{url}。未改试其他来源。"],
+            "notes": [],
+        }
     if layout == "html" and not tables:
         return {"items": [], "as_of": None, "gaps": ["文件像 HTML，但没有可读取的表格。未改试其他来源。"], "notes": []}
     if not tables:
@@ -325,7 +334,11 @@ def _csv_rows(text):
         delimiter = ";"
     else:
         delimiter = ","
-    return [row for row in csv.reader(io.StringIO(text), delimiter=delimiter)]
+    previous_limit = csv.field_size_limit()
+    try:
+        return [row for row in csv.reader(io.StringIO(text), delimiter=delimiter)]
+    finally:
+        csv.field_size_limit(previous_limit)
 
 
 def _parse_table(rows, *, kind, index_code):
@@ -346,6 +359,8 @@ def _parse_table(rows, *, kind, index_code):
         return {"items": [], "as_of": None, "gaps": gaps, "notes": []}
     items = []
     notes = []
+    accepted = {}
+    conflicted = set()
     if "index_code" not in columns and kind in {"constituents", "weights"}:
         notes.append("文件没有指数代码列，未能与请求代码交叉核对。")
     weight_header = rows[header_at][columns["weight"]] if "weight" in columns else ""
@@ -369,7 +384,8 @@ def _parse_table(rows, *, kind, index_code):
             item, row_gaps = _constituent_item(row, columns, number)
         gaps.extend(row_gaps)
         if item:
-            items.append(item)
+            _remember_item(kind, item, number, items, accepted, conflicted, gaps)
+    items = [item for item in items if item is not None]
     as_of, as_of_notes, as_of_gaps = _as_of(items, rows[:header_at], "date" in columns)
     return {"items": items, "as_of": as_of, "gaps": gaps + as_of_gaps, "notes": notes + as_of_notes}
 
@@ -379,18 +395,21 @@ def _constituent_item(row, columns, number):
     if not code:
         return None, [f"第 {number} 行成分代码为空或无法识别，已跳过。"]
     item = {"code": code}
-    parsed_date = _optional_date(row, columns)
-    if parsed_date[1]:
+    parsed_date, date_state = _optional_date(row, columns)
+    if date_state == "bad":
         return None, [f"第 {number} 行日期无法识别，已跳过。"]
-    if parsed_date[0]:
-        item["date"] = parsed_date[0]
+    gaps = []
+    if date_state == "missing":
+        gaps.append(f"第 {number} 行日期为空或未知。")
+    if parsed_date:
+        item["date"] = parsed_date
     name = _cell(row, columns.get("name"))
     exchange = _cell(row, columns.get("exchange"))
     if name:
         item["name"] = name
     if exchange:
         item["exchange"] = exchange
-    return item, []
+    return item, gaps
 
 
 def _weight_item(row, columns, number, header_percent):
@@ -403,20 +422,23 @@ def _weight_item(row, columns, number, header_percent):
     if state != "ok":
         return None, [f"第 {number} 行权重无法解析，未记为 0。"]
     item = {"code": code, "weight": number_value, "weight_unit": "percent" if header_percent or cell_percent else "file"}
-    parsed_date = _optional_date(row, columns)
-    if parsed_date[1]:
+    parsed_date, date_state = _optional_date(row, columns)
+    if date_state == "bad":
         return None, [f"第 {number} 行日期无法识别，已跳过。"]
-    if parsed_date[0]:
-        item["date"] = parsed_date[0]
+    gaps = []
+    if date_state == "missing":
+        gaps.append(f"第 {number} 行日期为空或未知。")
+    if parsed_date:
+        item["date"] = parsed_date
     name = _cell(row, columns.get("name"))
     if name:
         item["name"] = name
-    return item, []
+    return item, gaps
 
 
 def _valuation_item(row, columns, number):
-    parsed_date = _optional_date(row, columns)
-    if parsed_date[1]:
+    parsed_date, date_state = _optional_date(row, columns)
+    if date_state == "bad":
         return None, [f"第 {number} 行日期无法识别，已跳过。"]
     fields = {}
     saw_empty = False
@@ -436,39 +458,47 @@ def _valuation_item(row, columns, number):
             return None, [f"第 {number} 行估值无法解析，未记为 0。"]
         return None, [f"第 {number} 行估值列为空，未记为 0。"]
     gaps = []
+    if date_state == "missing":
+        gaps.append(f"第 {number} 行日期为空或未知。")
     if saw_empty or saw_bad:
         gaps.append(f"第 {number} 行部分估值列为空或无法解析，未把这些空列记为 0。")
     item = dict(fields)
-    if parsed_date[0]:
-        item = {"date": parsed_date[0], **item}
+    if parsed_date:
+        item = {"date": parsed_date, **item}
     return item, gaps
 
 
 def _optional_date(row, columns):
     if "date" not in columns:
-        return None, False
+        return None, "absent"
     raw = _cell(row, columns["date"])
     if not raw or raw.lower() in _MISSING:
-        return None, False
+        return None, "missing"
     parsed = _parse_date(raw)
     if parsed is None:
-        return None, True
-    return parsed, False
+        return None, "bad"
+    return parsed, "ok"
 
 
 def _as_of(items, preamble_rows, has_date_column):
     notes = []
     gaps = []
     dates = sorted({item["date"] for item in items if item.get("date")})
+    undated = any(not item.get("date") for item in items)
     preamble = _preamble_as_of(preamble_rows)
     if dates:
         if len(dates) > 1:
             notes.append(f"文件含多个日期（{dates[0]} 至 {dates[-1]}），as_of 取最晚一日，未与其他来源合并。")
         if preamble and preamble != dates[-1]:
             notes.append("表前截止日期与行内日期不一致，as_of 以行内日期为准。")
+        if undated and has_date_column:
+            gaps.append("as_of 仅覆盖有日期的行，部分行日期为空或未知。")
         return dates[-1], notes, gaps
     if preamble and items:
-        notes.append("as_of 取自文件中的截止日期行，表内没有逐行日期。")
+        if has_date_column:
+            notes.append("as_of 取自文件中的截止日期行；日期列存在但行内没有可读取的日期。")
+        else:
+            notes.append("as_of 取自文件中的截止日期行，表内没有逐行日期。")
         return preamble, notes, gaps
     if not items:
         return None, notes, gaps
@@ -477,6 +507,58 @@ def _as_of(items, preamble_rows, has_date_column):
     else:
         gaps.append("没有可读取的日期，as_of 为空。")
     return None, notes, gaps
+
+
+def _row_identity(kind, item):
+    date = item.get("date")
+    if not date:
+        return None
+    if kind == "valuation":
+        return (date,)
+    return (date, item.get("code"))
+
+
+def _row_signature(kind, item):
+    if kind == "valuation":
+        return tuple(item.get(key) for key in _VALUATION_KEYS)
+    if kind == "weights":
+        return (item.get("code"), item.get("weight"), item.get("weight_unit"), item.get("name"))
+    return (item.get("code"), item.get("name"), item.get("exchange"))
+
+
+def _conflict_gap(kind, number, item, previous):
+    date = item.get("date")
+    code = item.get("code")
+    if previous is None:
+        if kind == "valuation":
+            return f"第 {number} 行与已有记录同一日期（{date}）估值冲突，未采用。"
+        return f"第 {number} 行与已有记录同一日期（{date}）同一证券（{code}）冲突，未采用。"
+    if kind == "valuation":
+        return f"第 {number} 行与第 {previous} 行同一日期（{date}）估值冲突，均未采用。"
+    return f"第 {number} 行与第 {previous} 行同一日期（{date}）同一证券（{code}）冲突，均未采用。"
+
+
+def _remember_item(kind, item, number, items, accepted, conflicted, gaps):
+    identity = _row_identity(kind, item)
+    if identity is None:
+        items.append(item)
+        return
+    signature = _row_signature(kind, item)
+    if identity in conflicted:
+        gaps.append(_conflict_gap(kind, number, item, None))
+        return
+    previous = accepted.get(identity)
+    if previous is not None:
+        prev_index, prev_number, prev_sig = previous
+        if prev_sig == signature:
+            return
+        items[prev_index] = None
+        del accepted[identity]
+        conflicted.add(identity)
+        gaps.append(_conflict_gap(kind, number, item, prev_number))
+        return
+    accepted[identity] = (len(items), number, signature)
+    items.append(item)
 
 
 def _preamble_as_of(rows):

@@ -1,3 +1,4 @@
+import csv
 import json
 import unittest
 import urllib.error
@@ -210,6 +211,330 @@ class IndexOfficialTests(unittest.TestCase):
         self.assertNotIn("baostock", text)
         self.assertNotIn("requests", text)
         self.assertIn("allow_network=False", text)
+
+    def test_partial_missing_dates_are_not_treated_as_fully_verified(self):
+        weights = fetch_weights(
+            "000300",
+            fetch_bytes=(
+                "日期,指数代码,成分券代码,成分券名称,权重(%)\n"
+                "2024-06-28,000300,910001,示例甲,1.25\n"
+                ",000300,910002,示例乙,7.5\n"
+            ).encode(),
+        )
+        self._assert_partial_dates(weights, dated_code="910001", undated_code="910002")
+        self.assertEqual(weights["items"][0]["weight"], 1.25)
+        self.assertEqual(weights["items"][1]["weight"], 7.5)
+
+        constituents = fetch_constituents(
+            "000300",
+            fetch_bytes=(
+                "日期,指数代码,成分券代码,成分券名称\n"
+                "2024-06-28,000300,910001,示例甲\n"
+                "--,000300,910002,示例乙\n"
+            ).encode(),
+        )
+        self._assert_partial_dates(constituents, dated_code="910001", undated_code="910002")
+
+        valuation = fetch_valuation(
+            "000300",
+            fetch_bytes=(
+                "日期,指数代码,市盈率1\n"
+                "2024-06-28,000300,12.5\n"
+                ",000300,11.0\n"
+            ).encode(),
+        )
+        self.assertEqual(len(valuation["items"]), 2)
+        self.assertEqual(valuation["as_of"], "2024-06-28")
+        self.assertEqual(valuation["items"][0]["date"], "2024-06-28")
+        self.assertNotIn("date", valuation["items"][1])
+        self.assertEqual(valuation["items"][1]["pe1"], 11.0)
+        self.assertTrue(any("日期为空或未知" in gap for gap in valuation["gaps"]))
+        self.assertTrue(any("as_of 仅覆盖有日期的行" in gap for gap in valuation["gaps"]))
+
+    def test_all_missing_no_date_column_and_preamble_dates(self):
+        all_dated = fetch_constituents(
+            "000300",
+            fetch_bytes=(
+                "日期,指数代码,成分券代码,成分券名称\n"
+                "2024-06-28,000300,910001,示例甲\n"
+                "2024-06-28,000300,910002,示例乙\n"
+            ).encode(),
+        )
+        self.assertEqual(all_dated["as_of"], "2024-06-28")
+        self.assertEqual([item["code"] for item in all_dated["items"]], ["910001", "910002"])
+        self.assertTrue(all("date" in item for item in all_dated["items"]))
+        self.assertFalse(any("日期为空或未知" in gap for gap in all_dated["gaps"]))
+        self.assertFalse(any("仅覆盖有日期的行" in gap for gap in all_dated["gaps"]))
+
+        all_missing = fetch_constituents(
+            "000300",
+            fetch_bytes=(
+                "日期,指数代码,成分券代码,成分券名称\n"
+                ",000300,910001,示例甲\n"
+                "--,000300,910002,示例乙\n"
+            ).encode(),
+        )
+        self.assertIsNone(all_missing["as_of"])
+        self.assertEqual([item["code"] for item in all_missing["items"]], ["910001", "910002"])
+        self.assertTrue(all("date" not in item for item in all_missing["items"]))
+        self.assertTrue(any("日期为空或未知" in gap for gap in all_missing["gaps"]))
+        self.assertTrue(any("没有可读取的日期" in gap for gap in all_missing["gaps"]))
+        self.assertFalse(any("未提供日期列" in gap for gap in all_missing["gaps"]))
+        self.assertFalse(any("仅覆盖有日期的行" in gap for gap in all_missing["gaps"]))
+
+        no_column = fetch_constituents(
+            "000300",
+            fetch_bytes="指数代码,成分券代码,成分券名称\n000300,910001,示例甲\n".encode(),
+        )
+        self.assertIsNone(no_column["as_of"])
+        self.assertEqual(no_column["items"], [{"code": "910001", "name": "示例甲"}])
+        self.assertTrue(any("未提供日期列" in gap for gap in no_column["gaps"]))
+        self.assertFalse(any("没有可读取的日期" in gap for gap in no_column["gaps"]))
+        self.assertFalse(any("日期为空或未知" in gap for gap in no_column["gaps"]))
+
+        preamble_ok = fetch_constituents(
+            "000300",
+            fetch_bytes="截止日期：2024-01-31\n指数代码,成分券代码,成分券名称\n000300,910001,示例甲\n".encode(),
+        )
+        self.assertEqual(preamble_ok["as_of"], "2024-01-31")
+        self.assertTrue(any("截止日期行" in note and "没有逐行日期" in note for note in preamble_ok["notes"]))
+        self.assertFalse(any("仅覆盖有日期的行" in gap for gap in preamble_ok["gaps"]))
+
+        preamble_all_empty = fetch_constituents(
+            "000300",
+            fetch_bytes=(
+                "截止日期：2024-01-31\n"
+                "日期,指数代码,成分券代码,成分券名称\n"
+                ",000300,910001,示例甲\n"
+            ).encode(),
+        )
+        self.assertEqual(preamble_all_empty["as_of"], "2024-01-31")
+        self.assertTrue(any("日期列存在但行内没有可读取的日期" in note for note in preamble_all_empty["notes"]))
+        self.assertTrue(any("日期为空或未知" in gap for gap in preamble_all_empty["gaps"]))
+
+        preamble_conflict = fetch_constituents(
+            "000300",
+            fetch_bytes=(
+                "截止日期：2024-01-31\n"
+                "日期,指数代码,成分券代码,成分券名称\n"
+                "2024-06-28,000300,910001,示例甲\n"
+            ).encode(),
+        )
+        self.assertEqual(preamble_conflict["as_of"], "2024-06-28")
+        self.assertTrue(any("不一致" in note and "行内日期" in note for note in preamble_conflict["notes"]))
+
+        preamble_does_not_mask_partial = fetch_constituents(
+            "000300",
+            fetch_bytes=(
+                "截止日期：2024-01-31\n"
+                "日期,指数代码,成分券代码,成分券名称\n"
+                "2024-06-28,000300,910001,示例甲\n"
+                ",000300,910002,示例乙\n"
+            ).encode(),
+        )
+        self.assertEqual(preamble_does_not_mask_partial["as_of"], "2024-06-28")
+        self.assertNotEqual(preamble_does_not_mask_partial["as_of"], "2024-01-31")
+        self.assertTrue(preamble_does_not_mask_partial["gaps"])
+        self.assertTrue(any("as_of 仅覆盖有日期的行" in gap for gap in preamble_does_not_mask_partial["gaps"]))
+        self.assertTrue(any("日期为空或未知" in gap for gap in preamble_does_not_mask_partial["gaps"]))
+
+    def test_duplicate_identity_is_deduped_and_conflicts_are_reported(self):
+        same_weight = fetch_weights(
+            "000300",
+            fetch_bytes=(
+                "日期,指数代码,成分券代码,成分券名称,权重(%)\n"
+                "2024-06-28,000300,910001,示例甲,1.25\n"
+                "2024-06-28,000300,910001,示例甲,1.25\n"
+            ).encode(),
+        )
+        self.assertEqual(len(same_weight["items"]), 1)
+        self.assertEqual(same_weight["items"][0]["weight"], 1.25)
+        self.assertFalse(any("冲突" in gap for gap in same_weight["gaps"]))
+
+        conflict_weight = fetch_weights(
+            "000300",
+            fetch_bytes=(
+                "日期,指数代码,成分券代码,成分券名称,权重(%)\n"
+                "2024-06-28,000300,910001,示例甲,1.25\n"
+                "2024-06-28,000300,910001,示例甲,7.5\n"
+            ).encode(),
+        )
+        self.assertEqual(conflict_weight["items"], [])
+        self.assertTrue(any("冲突" in gap and "910001" in gap for gap in conflict_weight["gaps"]))
+        self.assertFalse(any("凑" in gap or "合计" in gap or "100%" in gap for gap in conflict_weight["gaps"]))
+
+        partial_weights = fetch_weights(
+            "000300",
+            fetch_bytes=(
+                "日期,指数代码,成分券代码,成分券名称,权重(%)\n"
+                "2024-06-28,000300,910001,示例甲,40\n"
+                "2024-06-28,000300,910002,示例乙,50\n"
+            ).encode(),
+        )
+        self.assertEqual(len(partial_weights["items"]), 2)
+        self.assertEqual([item["weight"] for item in partial_weights["items"]], [40.0, 50.0])
+        self.assertFalse(any("凑" in gap or "合计" in gap or "100%" in gap for gap in partial_weights["gaps"]))
+
+        same_constituent = fetch_constituents(
+            "000300",
+            fetch_bytes=(
+                "日期,指数代码,成分券代码,成分券名称\n"
+                "2024-06-28,000300,910001,示例甲\n"
+                "2024-06-28,000300,910001,示例甲\n"
+            ).encode(),
+        )
+        self.assertEqual([item["code"] for item in same_constituent["items"]], ["910001"])
+
+        conflict_constituent = fetch_constituents(
+            "000300",
+            fetch_bytes=(
+                "日期,指数代码,成分券代码,成分券名称\n"
+                "2024-06-28,000300,910001,示例甲\n"
+                "2024-06-28,000300,910001,示例乙\n"
+            ).encode(),
+        )
+        self.assertEqual(conflict_constituent["items"], [])
+        self.assertTrue(any("冲突" in gap for gap in conflict_constituent["gaps"]))
+
+        history = fetch_valuation(
+            "000300",
+            fetch_bytes=(
+                "日期,指数代码,市盈率1\n"
+                "2024-05-31,000300,13\n"
+                "2024-06-28,000300,12.5\n"
+            ).encode(),
+        )
+        self.assertEqual(len(history["items"]), 2)
+        self.assertEqual([item["date"] for item in history["items"]], ["2024-05-31", "2024-06-28"])
+        self.assertEqual(history["as_of"], "2024-06-28")
+
+        same_valuation = fetch_valuation(
+            "000300",
+            fetch_bytes=(
+                "日期,指数代码,市盈率1\n"
+                "2024-06-28,000300,12.5\n"
+                "2024-06-28,000300,12.5\n"
+            ).encode(),
+        )
+        self.assertEqual(len(same_valuation["items"]), 1)
+        self.assertEqual(same_valuation["items"][0]["pe1"], 12.5)
+
+        conflict_valuation = fetch_valuation(
+            "000300",
+            fetch_bytes=(
+                "日期,指数代码,市盈率1\n"
+                "2024-06-28,000300,12.5\n"
+                "2024-06-28,000300,11.0\n"
+            ).encode(),
+        )
+        self.assertEqual(conflict_valuation["items"], [])
+        self.assertTrue(any("冲突" in gap and "估值" in gap for gap in conflict_valuation["gaps"]))
+
+        undated_not_same_day = fetch_constituents(
+            "000300",
+            fetch_bytes=(
+                "日期,指数代码,成分券代码,成分券名称\n"
+                ",000300,910001,示例甲\n"
+                ",000300,910001,示例乙\n"
+            ).encode(),
+        )
+        self.assertEqual(len(undated_not_same_day["items"]), 2)
+        self.assertEqual([item["name"] for item in undated_not_same_day["items"]], ["示例甲", "示例乙"])
+        self.assertFalse(any("冲突" in gap for gap in undated_not_same_day["gaps"]))
+        self.assertTrue(any("日期为空或未知" in gap for gap in undated_not_same_day["gaps"]))
+
+        cni_same = fetch_constituents(
+            "399006",
+            provider="cni",
+            fetch_bytes=(
+                "日期,指数代码,样本代码,样本简称\n"
+                "2024-03-15,399006,910011,国证示例甲\n"
+                "2024-03-15,399006,910011,国证示例甲\n"
+            ).encode(),
+        )
+        self.assertEqual(cni_same["provider"], "cni")
+        self.assertEqual([item["code"] for item in cni_same["items"]], ["910011"])
+
+        cni_conflict = fetch_weights(
+            "399006",
+            provider="cni",
+            fetch_bytes=(
+                "日期,指数代码,样本代码,样本简称,权重(%)\n"
+                "2024-03-15,399006,910011,国证示例甲,1.5\n"
+                "2024-03-15,399006,910011,国证示例甲,3.0\n"
+            ).encode(),
+        )
+        self.assertEqual(cni_conflict["items"], [])
+        self.assertTrue(any("冲突" in gap and "910011" in gap for gap in cni_conflict["gaps"]))
+
+        cni_history = fetch_weights(
+            "399006",
+            provider="cni",
+            fetch_bytes=(
+                "日期,指数代码,样本代码,样本简称,权重(%)\n"
+                "2024-03-15,399006,910011,国证示例甲,1.5\n"
+                "2024-03-16,399006,910011,国证示例甲,1.6\n"
+            ).encode(),
+        )
+        self.assertEqual(len(cni_history["items"]), 2)
+        self.assertEqual([item["date"] for item in cni_history["items"]], ["2024-03-15", "2024-03-16"])
+        self.assertEqual(cni_history["as_of"], "2024-03-16")
+
+    def test_oversized_csv_field_returns_gap_and_restores_limit(self):
+        previous = csv.field_size_limit()
+        huge = "x" * (previous + 1)
+        payload = f"日期,指数代码,成分券代码,成分券名称\n2024-06-28,000300,910001,{huge}\n".encode()
+        try:
+            result = fetch_constituents("000300", fetch_bytes=payload)
+        except csv.Error:
+            self.fail("oversized CSV field should not raise csv.Error")
+        self.assertEqual(csv.field_size_limit(), previous)
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["source"], "csindex")
+        self.assertEqual(result["provider"], "csi")
+        self.assertEqual(result["license_note"], LICENSE_NOTE)
+        joined = " ".join(result["gaps"])
+        self.assertIn("CSV 解析失败", joined)
+        self.assertIn(index_official.CSI_CONSTITUENTS_URL.format(code="000300"), joined)
+        self.assertIn("未改试其他来源", joined)
+        self.assertNotIn("cnindex", joined)
+
+        with patch("index_official._http_get", return_value=payload) as getter:
+            via_http = fetch_constituents("000300", allow_network=True)
+        getter.assert_called_once_with(index_official.CSI_CONSTITUENTS_URL.format(code="000300"))
+        self.assertEqual(csv.field_size_limit(), previous)
+        self.assertEqual(via_http["items"], [])
+        self.assertEqual(via_http["source"], "csindex")
+        self.assertEqual(via_http["provider"], "csi")
+        self.assertTrue(via_http["license_note"])
+        self.assertTrue(any("CSV 解析失败" in gap for gap in via_http["gaps"]))
+        self.assertIn(index_official.CSI_CONSTITUENTS_URL.format(code="000300"), " ".join(via_http["gaps"]))
+
+        empty = fetch_constituents("000300", fetch_bytes=b"")
+        self.assertEqual(empty["items"], [])
+        self.assertEqual(empty["source"], "csindex")
+        self.assertTrue(empty["license_note"])
+        self.assertTrue(any("文件为空" in gap for gap in empty["gaps"]))
+
+        binary = fetch_weights("000300", fetch_bytes=b"\xd0\xcf\x11\xe0" + b"not-a-table")
+        self.assertEqual(binary["items"], [])
+        self.assertTrue(any("二进制表格（xls）" in gap for gap in binary["gaps"]))
+        workbook = fetch_valuation("000300", fetch_bytes=b"PK\x03\x04" + b"xlsx")
+        self.assertTrue(any("二进制表格（xlsx）" in gap for gap in workbook["gaps"]))
+        self.assertEqual(csv.field_size_limit(), previous)
+
+    def _assert_partial_dates(self, result, *, dated_code, undated_code):
+        self.assertEqual(len(result["items"]), 2)
+        self.assertEqual(result["as_of"], "2024-06-28")
+        dated = [item for item in result["items"] if item.get("date")]
+        undated = [item for item in result["items"] if not item.get("date")]
+        self.assertEqual([item["code"] for item in dated], [dated_code])
+        self.assertEqual(dated[0]["date"], "2024-06-28")
+        self.assertEqual([item["code"] for item in undated], [undated_code])
+        self.assertTrue(result["gaps"])
+        self.assertTrue(any("日期为空或未知" in gap for gap in result["gaps"]))
+        self.assertTrue(any("as_of 仅覆盖有日期的行" in gap for gap in result["gaps"]))
+        self.assertFalse(any("未提供日期列" in gap for gap in result["gaps"]))
 
 
 if __name__ == "__main__":

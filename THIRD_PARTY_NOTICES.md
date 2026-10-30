@@ -14,6 +14,15 @@
 
 真实模式可访问同花顺Financial API、巨潮公开索引、新浪和东方财富公开接口。程序许可不包含这些来源的数据、公告PDF或内容的再分发权。发行包不含用户资料、真实行情缓存、下载原文或可用Key。测试中部分公开公告元数据用于边界校验，PDF字节为明确标注的合成测试内容；不构成官方原文资料包。
 
+## 备源：腾讯 fqkline、baostock
+
+用途是同花顺 Key 之外的可选教学对照：腾讯前复权日 K，以及 baostock 日 K、交易日历和停牌标记。零 Key。默认不联网，不是 `Market.prices` / `Market.calendar` 的自动回退。调用方必须显式选源。结果带 `source` 与 `adjust`，禁止与同花顺序列静默混用，也禁止跨源拼成一条序列。失败只记录所试路径和缺口，不改试另一来源。
+
+- 腾讯 fqkline：`https://web.ifzq.gtimg.cn/appstock/app/fqkline/get`，参数 `qfq` 表示前复权。公开接口，仓库没有随附官方再分发许可。标记 `cn-public` / 许可待审。不包含再分发权。需维护者复核条款后，才能决定是否在真实模式里暴露给用户。
+- baostock：可选第三方包，安装方式是 `pip install baostock`。未写入强制依赖；未安装时只返回「未安装可选依赖 baostock」。日 K 使用 `adjustflag=2`（前复权；上游口径还有 1 后复权、3 不复权），交易日使用 `query_trade_dates`，停牌看 `tradestatus`。包和数据的许可待审（`cn-public` / 许可待审）。程序不捆绑该包，也不随发行包再分发其行情。需维护者复核条款。
+
+北交所不在这两个备源的接入范围内。演示模式不调用它们。
+
 ## 备源：中证 / 国证官方指数文件
 
 来源名：中证指数有限公司公开文件（csindex，`oss-ch.csindex.com.cn` 上的 `cons`、`closeweight`、`indicator` autofile）；国证指数公开文件（cnindex.com.cn 的样本导出，以及 `docs/gz_{代码}indicator.xls` 这一估值文件命名）。实现见 `index_official.py`。

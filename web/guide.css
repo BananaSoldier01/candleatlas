@@ -45,6 +45,10 @@
 .guide-example p,.guide-misconception p{margin:0}
 .guide-misconception{padding:16px 0;border-bottom:1px solid var(--line);margin-top:10px}
 .guide-misconception h4{color:#926637}
+.guide-self-check{padding:16px 0;border-bottom:1px solid var(--line)}
+.guide-self-check h4{color:#2f5d45}
+.guide-self-check p{margin:0 0 8px}
+.guide-self-check p:last-child{margin-bottom:0}
 .guide-location{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:20px 0}
 .guide-location p{margin:0;color:#5c7063;font-size:12px}
 .guide-location button{white-space:nowrap;font-size:12px!important}
@@ -122,3 +126,4 @@
 @media(min-width:761px) and (max-width:1050px){.guide-layout{grid-template-columns:1fr}.guide-directory{position:static}.guide-directory>summary{display:list-item}#guide-term-list{max-height:320px;min-height:0}}
 @media(max-width:1250px){.guide-shortcuts{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:760px){.guide-macd-values{gap:6px}.guide-macd-values>div{padding:10px 6px}.guide-macd-values strong{font-size:15px}.guide-macd-values span{font-size:10px}.guide-lab-switch{gap:5px}#beginner-guide .guide-lab-switch button{padding:6px 10px}}
+@media(max-width:760px){.guide-self-check{padding:12px 0}.guide-self-check p{font-size:12px;line-height:1.75}}

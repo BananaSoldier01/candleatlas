@@ -49,6 +49,21 @@ class PoolTests(unittest.TestCase):
         self.assertGreaterEqual(em.MIN_INTERVAL_SECONDS, 1)
         self.assertIn(str(int(em.MIN_INTERVAL_SECONDS)), result['rate_limit_note'])
 
+    def test_demo_breadth_without_snapshot_day_has_no_complete_sample(self):
+        def boom(*_a, **_k):
+            raise AssertionError('network forbidden')
+
+        with patch('em_market_backup._http_get', boom), patch('urllib.request.urlopen', boom):
+            for day in (None, '', DAY):
+                with self.subTest(day=day):
+                    value = em.synthetic_demo('breadth', day)
+                    self.assertIsNone(value['day'])
+                    self.assertIsNone(value['items'][0]['sample'])
+                    self.assertIs(value['items'][0]['complete'], False)
+                    self.assertEqual(value['source'], 'synthetic-demo')
+                    self.assertIs(value['synthetic'], True)
+                    self.assertEqual(value['items'][0]['bins'], {'-1': 1, '0': 1, '1': 1})
+
     def test_pool_metadata_is_present_on_every_failure_path(self):
         def fail_fetch(_url):
             raise OSError('synthetic failure')
@@ -720,8 +735,9 @@ class ApiTests(unittest.TestCase):
             before = self.request(f'/api/research?date={day}')
             status, payload = self.request(f'/api/backup/em-pools?date={day}&kind=up')
             denied, body = self.request(f'/api/backup/em-pools?date={day}&kind=up&allow_network=1')
-            after = self.request(f'/api/research?date={day}')
             wide, breadth = self.request(f'/api/backup/em-pools?kind=breadth&date={day}')
+            plain_status, plain_breadth = self.request('/api/backup/em-pools?kind=breadth')
+            after = self.request(f'/api/research?date={day}')
         self.assertEqual(before[0], 200)
         self.assertEqual(before[1], after[1])
         self.assertNotIn('eastmoney', json.dumps(before[1]))
@@ -740,7 +756,12 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(denied, 403)
         self.assertEqual(body['reason'], 'demo_read_only')
         self.assertEqual(wide, 200)
-        self.assertIsNone(breadth['day'])
+        self.assertEqual(plain_status, 200)
+        for value in (breadth, plain_breadth):
+            self.assertIsNone(value['day'])
+            self.assertIsNone(value['items'][0]['sample'])
+            self.assertIs(value['items'][0]['complete'], False)
+            self.assertIs(value['synthetic'], True)
         self.assertTrue(any('已忽略' in note for note in breadth['notes']))
         for kind in ('up', 'break', 'down'):
             value = em.synthetic_demo(kind, day)

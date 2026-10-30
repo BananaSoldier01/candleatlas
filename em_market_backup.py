@@ -820,12 +820,13 @@ def synthetic_demo(kind, day=None):
         'rate_limit_note': RATE_LIMIT_NOTE,
     }
     if kind == 'breadth':
-        notes = [notice, SNAPSHOT_NOTE, '合成家数只有三只示例股票的示意，不能填进同花顺涨跌分布。']
+        notes = [notice, SNAPSHOT_NOTE, '合成家数只有三只示例股票的示意，不能填进同花顺涨跌分布；未绑定快照日，不提供完整样本总数。']
         if day not in (None, ''):
             notes.append('请求中的 date 已忽略：涨跌分布不认历史日。')
         return {
             **base,
-            'items': [{'bins': {'-1': 1, '0': 1, '1': 1}, 'up': 1, 'down': 1, 'flat': 1, 'sample': 3}],
+            'items': [{'bins': {'-1': 1, '0': 1, '1': 1}, 'up': 1, 'down': 1, 'flat': 1,
+                       'sample': None, 'complete': False}],
             'gaps': [],
             'notes': [STATUS_NOTE, SEPARATE_NOTE, *notes],
         }

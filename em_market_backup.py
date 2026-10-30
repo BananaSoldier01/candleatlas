@@ -12,8 +12,10 @@
 
 涨跌分布只认 getTopicZDFenBu 的当日快照，请求里没有历史日参数，不认历史日。
 fenbu 可以是分桶字典，或同一快照里多个单键分桶对象组成的列表；这种列表合并成一份分布。不是这种列表形状时整份不采用。
-名单观察日只采用已与请求日对齐的响应日期（data.qdate 或 data.date）。缺日期标未核验；错日、非法日或晚于请求日的响应不作为该观察日有效名单。
-字段 p 按 milli/1000 换算，整数与浮点同一数值结果一致。字段形状与该单位均未经本仓库真实联网核对。
+名单日依据门户 date 请求参数；qdate 单独保留，不当作历史名单日期回显。
+仅接受 qdate 前 8 个自然日内的请求；显式 data.date 若存在则必须与请求日一致。
+缺日期保留未核验标识；错日、非法日及范围外的名单不采用。证据见 docs/EM_MARKET_CONTRACT.md。
+字段 p 按 milli/1000 换算，整数与浮点同一数值结果一致，已与门户显示函数和同期报价核对。
 
 客户端自我限速 MIN_INTERVAL_SECONDS（不少于 1 秒）。这不表示门户允许采集。
 页面查询参数 ut 是门户网页自带的公开参数，不是发给本项目的密钥；缺口文本里省略它。
@@ -33,6 +35,15 @@ POOL_PATHS = {
     'up': '/getTopicZTPool',
     'break': '/getTopicZBPool',
     'down': '/getTopicDTPool',
+}
+POOL_SORTS = {'up': 'fbt:asc', 'break': 'fbt:asc', 'down': 'fund:asc'}
+POOL_HISTORY_DAYS = 8  # 门户详情页日期选择器的自然日范围；不是长期历史服务。
+BREADTH_LABELS = {
+    '-11': '跌停', '-10': '低于-9%（未跌停）',
+    **{str(i): f'{i}%至{i + 1}%' for i in range(-9, 0)},
+    '0': '平盘',
+    **{str(i): f'{i - 1}%至{i}%' for i in range(1, 10)},
+    '10': '高于9%（未涨停）', '11': '涨停',
 }
 BREADTH_PATH = '/getTopicZDFenBu'
 # 门户网页公开查询参数，不是本项目申请的接口密钥。
@@ -55,7 +66,7 @@ STATUS_NOTE = '涨停、炸板、跌停和涨跌家数只记录上游给出的�
 SEPARATE_NOTE = '与同花顺 special-data 或全市场快照并列。失败不改走同花顺，成功也不写入研究摘要或炸板率。'
 SNAPSHOT_NOTE = '涨跌分布上游是当日快照，不认历史日。不能把某一天的快照填进其他观察日。'
 PRICE_NOTE = (
-    'p 按 milli/1000，整数与浮点同一数值结果一致；单位未经本仓库真实联网核对。'
+    'p 按 milli/1000，整数与浮点同一数值结果一致；已核对门户显示函数和同期报价，latest_price 单位为元。'
     '缺失、0、非有限或非数字留空，不补成 0。'
 )
 
@@ -135,8 +146,9 @@ def _public_query(extra):
 
 def _pool_urls(kind, compact):
     path = POOL_PATHS[kind]
-    request = f'https://{HOST}{path}?{_public_query([("Pageindex", "0"), ("pagesize", str(PAGE_SIZE)), ("sort", "fbt:asc"), ("date", compact)])}'
-    shown = f'https://{HOST}{path}?date={compact}&Pageindex=0&pagesize={PAGE_SIZE}'
+    sort = POOL_SORTS[kind]
+    request = f'https://{HOST}{path}?{_public_query([("Pageindex", "0"), ("pagesize", str(PAGE_SIZE)), ("sort", sort), ("date", compact)])}'
+    shown = f'https://{HOST}{path}?date={compact}&Pageindex=0&pagesize={PAGE_SIZE}&sort={sort}'
     return request, shown
 
 
@@ -318,7 +330,11 @@ def _row(row, kind, index, gaps):
             gaps.append(f'{label} 的连续跌停数不是正整数，留空，未记为 0。')
     else:
         continue_count = None
-    if 'zbc' in row:
+    if kind == 'down' and 'oc' in row:
+        open_count = _count(row.get('oc'))
+        if open_count is None:
+            gaps.append(f'{label} 的开板次数无法读取，留空，未记为 0。')
+    elif 'zbc' in row:
         open_count = _count(row.get('zbc'))
         if open_count is None:
             gaps.append(f'{label} 的开板或炸板次数无法读取，留空，未记为 0。')
@@ -355,49 +371,81 @@ def _row(row, kind, index, gaps):
 
 
 def _parse_pool(payload, kind, requested_day, shown):
-    """核验响应日期后再决定是否采用 pool。day 只写已核验且与请求日相同的响应日。"""
+    """采用门户日期参数契约，独立保留 qdate；显式名单日期不符则拒绝。"""
+    date_basis, upstream_qdate = 'unverified', None
+
+    def result(day, items, gaps, notes):
+        value = _envelope(kind, day, items, gaps, notes)
+        value.update(requested_day=requested_day, date_basis=date_basis,
+                     upstream_qdate=upstream_qdate, list_complete=False,
+                     latest_price_unit='CNY')
+        return value
     gaps = []
     notes = [PRICE_NOTE]
     if not isinstance(payload, dict):
-        return _envelope(kind, None, [], [f'响应不是 JSON 对象。试过的路径：{shown}。未改试其他来源。'], notes)
+        return result(None, [], [f'响应不是 JSON 对象。试过的路径：{shown}。未改试其他来源。'], notes)
     rc = payload.get('rc', 0)
     if rc not in (0, '0', None):
-        return _envelope(kind, None, [], [f'上游 rc={rc!r}，未采用名单。试过的路径：{shown}。未改试其他来源。'], notes)
+        return result(None, [], [f'上游 rc={rc!r}，未采用名单。试过的路径：{shown}。未改试其他来源。'], notes)
     if 'data' not in payload or payload.get('data') is None:
         detail = '上游 data 缺失' if 'data' not in payload else '上游 data 为 null'
         gap = f'{detail}，没有可核验日期，名单未核验。试过的路径：{shown}。未改试其他来源。'
-        return _envelope(kind, None, [], [gap], notes)
+        return result(None, [], [gap], notes)
     data = payload['data']
     if not isinstance(data, dict):
-        return _envelope(kind, None, [], [f'上游 data 不是对象，日期与名单均未核验。试过的路径：{shown}。未改试其他来源。'], notes)
-    state, response_day, raw_info = _response_calendar_day(data)
-    if state == 'invalid':
-        field, raw = raw_info
-        gap = (
-            f'响应 {field}={raw!r} 不是合法公历日期，不能作为观察日有效名单。'
-            f'试过的路径：{shown}。未改试其他来源。'
-        )
-        return _envelope(kind, None, [], [gap], notes)
-    if state == 'ok' and response_day != requested_day:
-        if response_day > requested_day:
-            relation = f'响应日期 {response_day} 晚于请求日 {requested_day}'
+        return result(None, [], [f'上游 data 不是对象，日期与名单均未核验。试过的路径：{shown}。未改试其他来源。'], notes)
+    # 门户历史页把选择日绑定到 date 参数；联网对照中历史 pool 不同，qdate 却仍是当日。
+    # 不将 qdate 偷换成历史名单日期，也不跳过真正的 data.date 冲突。
+    explicit_day = None
+    for field in ('qdate', 'date'):
+        if field not in data:
+            continue
+        parsed = _iso_from_snapshot(data[field])
+        if parsed is None:
+            gap = (f'响应 {field}={data[field]!r} 不是合法公历日期，未采用名单。'
+                   f'试过的路径：{shown}。未改试其他来源。')
+            return result(None, [], [gap], notes)
+        if field == 'qdate':
+            upstream_qdate = parsed
         else:
-            relation = f'响应日期 {response_day} 早于请求日 {requested_day}'
-        gap = f'{relation}，不能作为该观察日的有效名单。试过的路径：{shown}。未改试其他来源。'
-        return _envelope(kind, None, [], [gap], notes)
-    verified_day = response_day if state == 'ok' else None
-    if state == 'absent':
+            explicit_day = parsed
+    if explicit_day is not None and explicit_day != requested_day:
+        return result(None, [], [
+            f'响应名单日期 data.date={explicit_day} 与请求日 {requested_day} 不符，未采用名单。'
+            f'试过的路径：{shown}。未改试其他来源。'
+        ], notes)
+    if upstream_qdate is not None:
+        age = (dt.date.fromisoformat(upstream_qdate) - dt.date.fromisoformat(requested_day)).days
+        if age < 0:
+            return result(None, [], [
+                f'上游 qdate={upstream_qdate} 早于请求日 {requested_day}，未采用名单。'
+                f'试过的路径：{shown}。未改试其他来源。'
+            ], notes)
+        if age > POOL_HISTORY_DAYS:
+            return result(None, [], [
+                f'请求日 {requested_day} 超出门户相对 qdate={upstream_qdate} 的 {POOL_HISTORY_DAYS} 个自然日范围，未采用名单。'
+                f'试过的路径：{shown}。未改试其他来源。'
+            ], notes)
+    if explicit_day is not None:
+        verified_day, date_basis = explicit_day, 'response_date'
+    elif upstream_qdate is not None:
+        verified_day, date_basis = requested_day, 'portal_date_parameter'
+        notes.append('名单日依据门户 date 请求参数，非响应日期回显；上游 qdate 单独保留，不当作历史名单日期。')
+    else:
+        verified_day = None
         gaps.append(
             f'响应未提供 data.qdate 或 data.date，日期未核验，不能把请求日 {requested_day} 写成已核对的观察日。'
             f'试过的路径：{shown}。未改试其他来源。'
         )
     if not isinstance(data.get('pool'), list):
         gaps.append(f'上游缺少 pool 列表。试过的路径：{shown}。未改试其他来源。')
-        return _envelope(kind, verified_day, [], gaps, notes)
+        return result(verified_day, [], gaps, notes)
     pool = data['pool']
     total = data.get('tc')
     tc_matches = False
-    if isinstance(total, bool) or (total is not None and not isinstance(total, int)):
+    if total is None:
+        gaps.append('上游缺少 tc，无法核对是否取全，不把空列表视为已核对的零家。')
+    elif isinstance(total, bool) or not isinstance(total, int) or total < 0:
         gaps.append('上游 tc 不是整数，无法核对是否取全。未自动翻页。')
     elif isinstance(total, int) and total != len(pool):
         gaps.append(f'上游 tc={total} 与本页 {len(pool)} 条不一致。未自动翻页，也未改试其他来源。')
@@ -406,7 +454,7 @@ def _parse_pool(payload, kind, requested_day, shown):
     if len(pool) >= PAGE_SIZE:
         gaps.append(f'本页条数达到 pagesize={PAGE_SIZE} 上限，未自动翻页，名单可能不完整。')
     if verified_day is not None and len(pool) == 0 and tc_matches:
-        notes.append('上游 pool 为空，日期已核验，tc 与条数一致，按空池记录。')
+        notes.append('上游 pool 为空，日期依据已列明，tc 与条数一致，按空池记录。')
     elif verified_day is not None and len(pool) == 0 and total is None:
         notes.append('上游 pool 为空，但未给出 tc，不把缺失记成已核对的零家。')
     items, seen = [], set()
@@ -422,7 +470,10 @@ def _parse_pool(payload, kind, requested_day, shown):
             continue
         seen.add(parsed['thscode'])
         items.append(parsed)
-    return _envelope(kind, verified_day, items, gaps, notes)
+    value = result(verified_day, items, gaps, notes)
+    value['list_complete'] = (verified_day is not None and tc_matches
+                              and len(items) == len(pool) and len(pool) < PAGE_SIZE)
+    return value
 
 
 def _iso_from_snapshot(value):
@@ -461,15 +512,10 @@ def _response_calendar_day(data):
 
 
 def _bucket_side(key):
-    """Canonical fenbu key → 'up', 'down', 'flat', or None.
-
-    11 与 -11 只按正负号归入方向，不另赋官方总家数含义。
-    """
-    if not isinstance(key, str) or not re.fullmatch(r'-?\d+', key):
+    """只接受门户图例里的 23 个桶，不能把新增字段猜成家数。"""
+    if key not in BREADTH_LABELS:
         return None
     number = int(key)
-    if str(number) != key:
-        return None
     if number > 0:
         return 'up'
     if number < 0:
@@ -514,8 +560,7 @@ def _normalize_fenbu(fenbu, gaps):
         conflict_keys.add(key)
         gaps.append(f'涨跌分布字段 {key!r} 在同一份分布里出现不同的值，未覆盖，也未相加。')
         side = _bucket_side(key)
-        if side is not None:
-            conflict_sides.add(side)
+        conflict_sides.add(side or 'unknown')
     return 'ok', merged, conflict_sides
 
 
@@ -526,13 +571,14 @@ def _direction_count(values, invalid, conflict, conflict_gap, invalid_gap, gaps)
         if invalid:
             gaps.append(invalid_gap)
         return None
-    if values:
+    if len(values) == 11:
         return sum(values)
     return None
 
 
 def _parse_breadth(payload, shown):
-    notes = [SNAPSHOT_NOTE, '涨跌分布的分桶沿用上游字段，与同花顺七组涨跌分布不是同一口径，禁止合并或互相补零。']
+    notes = [SNAPSHOT_NOTE, '涨跌分布仅统计东方财富门户这 23 个互斥桶，未声明覆盖全部 A 股。'
+             '涨停/跌停桶与高于9%/低于-9%的未封板桶互斥；与同花顺七组分布不是同一口径，禁止合并或互相补零。']
     if not isinstance(payload, dict):
         return _envelope('breadth', None, [], [f'响应不是 JSON 对象。试过的路径：{shown}。未改读其他接口。'], notes)
     rc = payload.get('rc', 0)
@@ -541,13 +587,15 @@ def _parse_breadth(payload, shown):
     data = payload.get('data')
     if not isinstance(data, dict):
         return _envelope('breadth', None, [], [f'未找到涨跌分布 data。试过的路径：{shown}。未改读其他接口。'], notes)
+    gaps = []
     state, day, _raw = _response_calendar_day(data)
     if state == 'invalid':
         notes.append('快照里的日期无法解析，day 留空。不把本机今天填进去。')
+        gaps.append(f'快照日期无效，不能匹配观察日。试过的路径：{shown}。未改读其他接口。')
         day = None
     elif state != 'ok':
         day = None
-    gaps = []
+        gaps.append(f'快照缺少日期，不能匹配观察日。试过的路径：{shown}。未改读其他接口。')
     status, fenbu, conflict_sides = _normalize_fenbu(data.get('fenbu'), gaps)
     if status != 'ok':
         return _envelope('breadth', day, [], gaps, notes)
@@ -559,10 +607,12 @@ def _parse_breadth(payload, shown):
     flat_value = None
     saw_flat = False
     invalid_positive = invalid_negative = invalid_flat = False
+    unknown_fields = 'unknown' in conflict_sides
     for key, value in fenbu.items():
         side = _bucket_side(key)
         if side is None:
             gaps.append(f'涨跌分布字段 {key!r} 不能当作家数，已跳过，未补 0。')
+            unknown_fields = True
             continue
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             gaps.append(f'涨跌分布字段 {key!r} 的值无效，该方向不完整，未补 0。')
@@ -581,8 +631,8 @@ def _parse_breadth(payload, shown):
         else:
             saw_flat = True
             flat_value = value
-    # 没有已核验的「省略即零」规则：某一方向完全没有有效桶，或该方向有无效桶或键值冲突，该方向保持未知。
-    # 正负键只按符号相加（含 11 与 -11）。这是已识别分桶的部分家数，不写成全市场家数。
+    # 每个方向必须有全部 11 桶；只出现部分桶（即使为 0）不能算完整家数。
+    # 未知桶可能改变统计范围，整份汇总暂停，已知桶仍可审阅。
     conflict_positive = 'up' in conflict_sides
     conflict_negative = 'down' in conflict_sides
     conflict_flat = 'flat' in conflict_sides
@@ -604,6 +654,10 @@ def _parse_breadth(payload, shown):
         '下跌方向有无效桶，down 记为未知，未把其余下跌桶加总成完整家数。',
         gaps,
     )
+    if len(positive) != 11:
+        gaps.append('上涨方向缺少完整的 11 个有效桶，up 未知，未补 0。')
+    if len(negative) != 11:
+        gaps.append('下跌方向缺少完整的 11 个有效桶，down 未知，未补 0。')
     if invalid_flat or conflict_flat:
         flat = None
         if conflict_flat:
@@ -614,13 +668,21 @@ def _parse_breadth(payload, shown):
         flat = flat_value
     else:
         flat = None
+        gaps.append('缺少平盘桶，flat 未知，未补 0。')
+    if unknown_fields:
+        up = down = flat = None
+        gaps.append('出现图例之外的字段，统计范围未核验，暂停汇总。')
     if up is not None and down is not None and flat is not None:
         sample = up + down + flat
     else:
         sample = None
-        if any(part is not None for part in (up, down, flat)):
-            notes.append('涨跌分布不完整，已保留的计数是部分结果；未知方向未补 0，sample 不把未知当成 0。')
-    item = {'bins': bins, 'up': up, 'down': down, 'flat': flat, 'sample': sample}
+        notes.append('涨跌分布不完整，已保留的桶是部分结果；未知方向未补 0，sample 不把未知当成 0。')
+    item = {
+        'bins': bins, 'up': up, 'down': down, 'flat': flat, 'sample': sample,
+        'bin_labels': {key: BREADTH_LABELS[key] for key in bins},
+        'aggregation_scope': 'eastmoney_portal_distribution',
+        'complete': sample is not None and day is not None,
+    }
     return _envelope('breadth', day, [item], gaps, notes)
 
 

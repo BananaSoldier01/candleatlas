@@ -188,11 +188,11 @@ class PoolTests(unittest.TestCase):
         self.assertIn('不认历史日', '\n'.join(result['notes']))
         item = result['items'][0]
         self.assertEqual(item['bins'], {'-1': 2, '0': 3, '1': 4})
-        self.assertEqual(item['up'], 4)
-        self.assertEqual(item['down'], 2)
+        self.assertIsNone(item['up'])
+        self.assertIsNone(item['down'])
         self.assertEqual(item['flat'], 3)
-        self.assertEqual(item['sample'], 9)
-        self.assertEqual(result['gaps'], [])
+        self.assertIsNone(item['sample'])
+        self.assertTrue(any('11 个有效桶' in gap for gap in result['gaps']))
         self.assertFalse(any('未拼接' in gap or '多段' in gap for gap in result['gaps']))
         self.assertNotIn('全市场家数', '\n'.join(result['gaps'] + result['notes']))
         other = em.fetch_market_breadth(fetch_bytes=b'{"data": {"f104": 10, "f105": 3, "qdate": 20260231}}')
@@ -202,7 +202,7 @@ class PoolTests(unittest.TestCase):
         self.assertIn('未改读其他接口', other['gaps'][0])
         self.assertTrue(any('无法解析' in note for note in other['notes']))
         flat = em.fetch_market_breadth(fetch_bytes=b'{"data": {"fenbu": {"0": 0, "1": 2}}}')
-        self.assertEqual(flat['items'][0]['up'], 2)
+        self.assertIsNone(flat['items'][0]['up'])
         self.assertEqual(flat['items'][0]['flat'], 0)
         self.assertIsNone(flat['items'][0]['down'])
         self.assertIsNone(flat['items'][0]['sample'])
@@ -244,101 +244,100 @@ class PoolTests(unittest.TestCase):
         market = (ROOT / 'market.py').read_text()
         self.assertIn("'break_rate': len(broken)/len(touched)*100 if up is not None and broken is not None and touched else None", market)
 
-    def test_response_date_is_checked_before_the_pool_is_kept(self):
+    def test_pool_dates_keep_request_basis_separate_from_qdate(self):
         row = {'c': '600000', 'm': 1, 'n': '合成甲', 'p': 11550}
-        same_dates = (
-            ('up', 'qdate', 20261029),
-            ('break', 'qdate', '20261029'),
-            ('down', 'qdate', '2026-10-29'),
-        )
-        for kind, field, value in same_dates:
-            with self.subTest(kind=kind, case='same', value=value):
-                data = {'tc': 1, 'pool': [row], field: value}
-                result = em.fetch_limit_pool(DAY, kind, fetch_bytes=json.dumps({'data': data}).encode())
-                self.assertEqual(result['kind'], kind)
-                self.assertEqual(result['day'], DAY)
-                self.assertEqual([item['thscode'] for item in result['items']], ['600000.SH'])
-                self.assertEqual(result['gaps'], [])
-                self.assertEqual(result['source'], 'eastmoney')
-        fallback = em.fetch_limit_pool(DAY, 'up', fetch_bytes=json.dumps({
-            'data': {'date': '2026-10-29', 'tc': 1, 'pool': [row]},
-        }).encode())
-        self.assertEqual(fallback['day'], DAY)
-        self.assertEqual(len(fallback['items']), 1)
+        def parse(day=DAY, kind='up', **dates):
+            body = json.dumps({'data': {'tc': 1, 'pool': [row], **dates}}).encode()
+            return em.fetch_limit_pool(day, kind, fetch_bytes=body)
 
         for kind in ('up', 'break', 'down'):
-            with self.subTest(kind=kind, case='stale'):
-                result = em.fetch_limit_pool(DAY, kind, fetch_bytes=json.dumps({
-                    'data': {'qdate': 20261028, 'tc': 1, 'pool': [row]},
-                }).encode())
-                text = '\n'.join(result['gaps'])
-                self.assertIsNone(result['day'])
-                self.assertNotEqual(result['day'], DAY)
-                self.assertEqual(result['items'], [])
-                self.assertIn('2026-10-28', text)
-                self.assertIn('早于', text)
-                self.assertIn(em.POOL_PATHS[kind], text)
-                self.assertIn('未改试其他来源', text)
-                self.assertFalse(any('空池' in note for note in result['notes']))
-                self.assertEqual(result['source'], 'eastmoney')
+            for qdate in (20261029, '20261030', '2026-10-30'):
+                with self.subTest(kind=kind, qdate=qdate):
+                    value = parse(kind=kind, qdate=qdate)
+                    self.assertEqual(value['day'], DAY)
+                    self.assertEqual(value['date_basis'], 'portal_date_parameter')
+                    self.assertEqual(value['requested_day'], DAY)
+                    self.assertEqual(value['upstream_qdate'], '2026-10-29' if qdate == 20261029 else '2026-10-30')
+                    self.assertTrue(value['list_complete'])
+                    self.assertEqual(value['gaps'], [])
+                    self.assertEqual(len(value['items']), 1)
+                    self.assertIn('非响应日期回显', ' '.join(value['notes']))
+            stale = parse(kind=kind, qdate=20261028)
+            self.assertIsNone(stale['day'])
+            self.assertEqual(stale['items'], [])
+            self.assertIn('早于', ' '.join(stale['gaps']))
+            self.assertIn(em.POOL_PATHS[kind], ' '.join(stale['gaps']))
 
-        illegal = (('up', 20260231), ('break', '20260231'), ('down', '2026-02-31'))
-        for kind, value in illegal:
-            with self.subTest(kind=kind, case='illegal', value=value):
-                result = em.fetch_limit_pool(DAY, kind, fetch_bytes=json.dumps({
-                    'data': {'qdate': value, 'tc': 1, 'pool': [row]},
-                }).encode())
-                text = '\n'.join(result['gaps'])
-                self.assertIsNone(result['day'])
-                self.assertEqual(result['items'], [])
-                self.assertIn('不是合法公历', text)
-                self.assertIn(str(value), text)
-                self.assertIn(em.POOL_PATHS[kind], text)
-                self.assertIn('未改试其他来源', text)
-
-        for kind in ('up', 'break', 'down'):
-            with self.subTest(kind=kind, case='missing'):
-                result = em.fetch_limit_pool(DAY, kind, fetch_bytes=json.dumps({
-                    'data': {'tc': 1, 'pool': [row]},
-                }).encode())
-                text = '\n'.join(result['gaps'])
-                self.assertIsNone(result['day'])
-                self.assertEqual([item['thscode'] for item in result['items']], ['600000.SH'])
-                self.assertIn('日期未核验', text)
-                self.assertIn(em.POOL_PATHS[kind], text)
-                self.assertNotEqual(result['gaps'], [])
-
-        future = em.fetch_limit_pool(DAY, 'down', fetch_bytes=json.dumps({
-            'data': {'qdate': 20261030, 'tc': 1, 'pool': [row]},
-        }).encode())
-        self.assertIsNone(future['day'])
+        explicit = parse(date='2026-10-29', qdate=20261030)
+        self.assertEqual(explicit['day'], DAY)
+        self.assertEqual(explicit['date_basis'], 'response_date')
+        self.assertEqual(parse(date=20261029)['date_basis'], 'response_date')
+        for date in (20261028, 20261030):
+            rejected = parse(date=date, qdate=20261030)
+            self.assertEqual(rejected['items'], [])
+            self.assertIsNone(rejected['day'])
+            self.assertIn('不符', ' '.join(rejected['gaps']))
+        for fields in ({'qdate': 20260231}, {'date': '2026-02-31'},
+                       {'qdate': None, 'date': 20261029}, {'qdate': True},
+                       {'qdate': 20261030, 'date': 'bad'}):
+            rejected = parse(**fields)
+            self.assertEqual(rejected['items'], [])
+            self.assertIn('不是合法公历', ' '.join(rejected['gaps']))
+        missing = parse()
+        self.assertIsNone(missing['day'])
+        self.assertEqual(missing['date_basis'], 'unverified')
+        self.assertFalse(missing['list_complete'])
+        self.assertEqual(len(missing['items']), 1)
+        self.assertIn('日期未核验', ' '.join(missing['gaps']))
+        boundary = parse(day='2026-10-22', qdate=20261030)
+        self.assertEqual(boundary['day'], '2026-10-22')
+        too_old = parse(day='2026-10-21', qdate=20261030)
+        self.assertEqual(too_old['items'], [])
+        self.assertIn('8 个自然日', ' '.join(too_old['gaps']))
+        future = parse(day='2026-10-31', qdate=20261030)
         self.assertEqual(future['items'], [])
-        self.assertIn('晚于', '\n'.join(future['gaps']))
-        self.assertIn(em.POOL_PATHS['down'], '\n'.join(future['gaps']))
+        # 显式名单日期也不能绕过门户保留范围。
+        self.assertEqual(parse(day='2026-10-21', date=20261021, qdate=20261030)['items'], [])
 
-        preferred = em.fetch_limit_pool(DAY, 'up', fetch_bytes=json.dumps({
-            'data': {'qdate': 20261028, 'date': '2026-10-29', 'tc': 1, 'pool': [row]},
-        }).encode())
-        self.assertIsNone(preferred['day'])
-        self.assertEqual(preferred['items'], [])
-        self.assertIn('2026-10-28', '\n'.join(preferred['gaps']))
+    def test_pool_query_sort_and_down_fields_follow_portal_contract(self):
+        from urllib.parse import parse_qs, urlsplit
+        for kind, sort in (('up', 'fbt:asc'), ('break', 'fbt:asc'), ('down', 'fund:asc')):
+            seen = []
+            def fetch(url):
+                seen.append(url)
+                return json.dumps({'data': {'qdate': 20261030, 'tc': 1, 'pool': [
+                    {'c': '000002', 'm': 0, 'p': 12500, 'oc': 6, 'ocnt': 9, 'days': 2, 'lbt': 100739}
+                ]}}).encode()
+            result = em.fetch_limit_pool(DAY, kind, allow_network=True, fetch=fetch,
+                                         clock=lambda: 0, sleeper=lambda _s: None)
+            self.assertEqual(len(seen), 1)
+            query = parse_qs(urlsplit(seen[0]).query)
+            self.assertEqual(query['sort'], [sort])
+            self.assertEqual(query['date'], ['20261029'])
+            self.assertTrue(result['list_complete'])
+            if kind == 'down':
+                self.assertEqual(result['items'][0]['open_count'], 6)
+                self.assertEqual(result['items'][0]['continue_day_cnt'], 2)
+                self.assertEqual(result['items'][0]['last_limit_time'], '10:07:39')
+        for bad in (None, '6', True, -1):
+            body = json.dumps({'data': {'qdate': 20261030, 'tc': 1, 'pool': [
+                {'c': '000002', 'm': 0, 'oc': bad, 'ocnt': 9},
+            ]}}).encode()
+            invalid = em.fetch_limit_pool(DAY, 'down', fetch_bytes=body)
+            self.assertIsNone(invalid['items'][0]['open_count'])
+            self.assertTrue(any('开板次数' in g for g in invalid['gaps']))
 
-        seen = []
-
-        def fetch(url):
-            seen.append(url)
-            return json.dumps({'data': {'qdate': 20261028, 'tc': 1, 'pool': [row]}}).encode()
-
-        def boom(*_a, **_k):
-            raise AssertionError('network forbidden')
-
-        with patch('urllib.request.urlopen', boom), patch('em_market_backup._http_get', boom):
-            fetched = em.fetch_limit_pool(DAY, 'up', allow_network=True, fetch=fetch, clock=lambda: 0, sleeper=lambda _s: None)
-        self.assertEqual(len(seen), 1)
-        self.assertIn('/getTopicZTPool', seen[0])
-        self.assertNotIn('/getTopicZBPool', seen[0])
-        self.assertIsNone(fetched['day'])
-        self.assertEqual(fetched['items'], [])
+    def test_pool_completeness_does_not_hide_count_or_identity_gaps(self):
+        row = {'c': '600000', 'm': 1}
+        for fields in ({'tc': 2, 'pool': [row]}, {'pool': []}, {'tc': -1, 'pool': []},
+                       {'tc': 2, 'pool': [row, row]}, {'tc': 2, 'pool': [row, {'c': 'bad'}]}):
+            body = json.dumps({'data': {'qdate': 20261030, **fields}}).encode()
+            value = em.fetch_limit_pool(DAY, fetch_bytes=body)
+            self.assertFalse(value['list_complete'])
+            self.assertTrue(value['gaps'])
+        value = em.fetch_limit_pool(DAY, fetch_bytes=b'{"data":{"qdate":20261030,"tc":0,"pool":[]}}')
+        self.assertTrue(value['list_complete'])
+        self.assertEqual(value['items'], [])
 
     def test_missing_data_is_not_a_verified_empty_pool(self):
         row = {'c': '600000', 'm': 1, 'n': '合成甲'}
@@ -400,192 +399,89 @@ class PoolTests(unittest.TestCase):
         self.assertTrue(any('日期未核验' in gap for gap in unverified_empty['gaps']))
         self.assertFalse(any('空池' in note for note in unverified_empty['notes']))
 
-    def test_breadth_directions_stay_unknown_without_a_zero_fill_rule(self):
-        def item_of(fenbu):
-            result = em.fetch_market_breadth(fetch_bytes=json.dumps({
-                'rc': 0, 'data': {'qdate': 20261029, 'fenbu': fenbu},
+    def test_breadth_requires_all_portal_buckets_for_a_total(self):
+        def parse(fenbu, **dates):
+            return em.fetch_market_breadth(fetch_bytes=json.dumps({
+                'data': {'qdate': 20261030, 'fenbu': fenbu, **dates}
             }).encode())
-            self.assertEqual(result['day'], '2026-10-29')
-            self.assertEqual(len(result['items']), 1, result['gaps'])
-            return result, result['items'][0]
-
-        result, item = item_of({'-1': 'bad', '0': 1, '1': 2})
-        self.assertEqual(item['bins'], {'0': 1, '1': 2})
-        self.assertEqual(item['up'], 2)
-        self.assertEqual(item['flat'], 1)
-        self.assertIsNone(item['down'])
-        self.assertIsNone(item['sample'])
-        self.assertTrue(any('无效' in gap for gap in result['gaps']))
-        self.assertTrue(any('部分' in note or '不完整' in note for note in result['notes']))
-
-        _result, item = item_of({'-1': 4, '0': 1})
-        self.assertIsNone(item['up'])
-        self.assertEqual(item['down'], 4)
-        self.assertEqual(item['flat'], 1)
-        self.assertIsNone(item['sample'])
-
-        _result, item = item_of({'0': 5})
-        self.assertIsNone(item['up'])
-        self.assertIsNone(item['down'])
-        self.assertEqual(item['flat'], 5)
-        self.assertIsNone(item['sample'])
-
-        result, item = item_of({'-1': 0, '0': 0, '1': 0})
-        self.assertEqual((item['up'], item['down'], item['flat'], item['sample']), (0, 0, 0, 0))
-        self.assertFalse(any('部分' in note for note in result['notes']))
-        self.assertEqual(result['gaps'], [])
-
-        result, item = item_of({'-2': 1, '-1': 3, '0': 4, '1': 5, '11': 6})
-        self.assertEqual((item['down'], item['up'], item['flat'], item['sample']), (4, 11, 4, 19))
-        self.assertEqual(result['gaps'], [])
-
-        _result, item = item_of({'1': 2, '2': 'bad', '-1': 3, '0': 1})
-        self.assertIsNone(item['up'])
-        self.assertEqual(item['down'], 3)
-        self.assertEqual(item['flat'], 1)
-        self.assertEqual(item['bins'], {'1': 2, '-1': 3, '0': 1})
-        self.assertIsNone(item['sample'])
-
-        _result, item = item_of({'-1': 0, '0': 0})
-        self.assertIsNone(item['up'])
-        self.assertEqual(item['down'], 0)
-        self.assertEqual(item['flat'], 0)
-        self.assertIsNone(item['sample'])
-
-        unsupported = em.fetch_market_breadth(fetch_bytes=json.dumps({
-            'rc': 0,
-            'data': {'qdate': 20261029, 'fenbu': [{'-1': 4, '1': 6}, {'-1': 100, '0': 9, '1': 100}]},
-        }).encode())
-        self.assertEqual(unsupported['day'], '2026-10-29')
-        self.assertEqual(unsupported['items'], [])
-        self.assertTrue(any('不支持' in gap for gap in unsupported['gaps']))
-        self.assertFalse(any('未拼接' in gap or '多段' in gap for gap in unsupported['gaps']))
-        self.assertFalse(any('未找到 fenbu' in gap for gap in unsupported['gaps']))
-
-        result, item = item_of({'0': 'bad', '1': 2, '-1': 3})
-        self.assertIsNone(item['flat'])
-        self.assertEqual(item['up'], 2)
-        self.assertEqual(item['down'], 3)
-        self.assertIsNone(item['sample'])
-        self.assertNotIn('0', item['bins'])
-        self.assertTrue(any('平盘' in gap for gap in result['gaps']))
-
-    def test_breadth_single_key_list_is_one_snapshot(self):
-        def parsed(fenbu, **fields):
-            body = json.dumps({'rc': 0, 'data': {'fenbu': fenbu, **fields}}).encode()
-            return em.fetch_market_breadth(fetch_bytes=body)
-
-        result = parsed([{'-1': 2}, {'0': 3}, {'1': 4}], qdate=20261029)
+        full = {str(i): 0 for i in range(-11, 12)}
+        full.update({'-11': 7, '-10': 8, '-1': 3, '0': 2, '1': 4, '10': 5, '11': 6})
+        result = parse([{k: v} for k, v in full.items()])
         item = result['items'][0]
-        self.assertEqual(item['bins'], {'-1': 2, '0': 3, '1': 4})
-        self.assertEqual((item['up'], item['down'], item['flat'], item['sample']), (4, 2, 3, 9))
         self.assertEqual(result['gaps'], [])
-        self.assertFalse(any('未拼接' in gap or '多段' in gap for gap in result['gaps']))
-        self.assertNotIn('全市场家数', '\n'.join(result['gaps'] + result['notes']))
-
-        dictated = parsed({'-1': 2, '0': 3, '1': 4}, qdate=20261029)
-        self.assertEqual(dictated['items'][0], result['items'][0])
-        self.assertEqual(dictated['gaps'], [])
-
-        deduped = parsed([{'-1': 2}, {'1': 4}, {'1': 4}, {'0': 0}, {'-1': 2}, {'0': 0}], qdate=20261029)
-        deduped_item = deduped['items'][0]
-        self.assertEqual(deduped_item['bins'], {'-1': 2, '1': 4, '0': 0})
-        self.assertEqual((deduped_item['up'], deduped_item['down'], deduped_item['flat'], deduped_item['sample']), (4, 2, 0, 6))
-        self.assertEqual(deduped['gaps'], [])
-
-        conflict = parsed([{'1': 2}, {'1': 9}, {'2': 5}, {'-1': 3}, {'0': 1}], qdate=20261029)
-        conflict_item = conflict['items'][0]
-        self.assertEqual(conflict_item['bins'], {'2': 5, '-1': 3, '0': 1})
-        self.assertIsNone(conflict_item['up'])
-        self.assertEqual(conflict_item['down'], 3)
-        self.assertEqual(conflict_item['flat'], 1)
-        self.assertIsNone(conflict_item['sample'])
-        self.assertNotIn(2, conflict_item['bins'].values())
-        self.assertNotIn(9, conflict_item['bins'].values())
-        self.assertTrue(any('不同的值' in gap and "'1'" in gap for gap in conflict['gaps']))
-        self.assertTrue(any('上涨方向有键值冲突' in gap for gap in conflict['gaps']))
-        self.assertFalse(any('未拼接' in gap or '多段' in gap for gap in conflict['gaps']))
-
-        typed = parsed([{'1': 2}, {'1': 2.0}, {'-1': 3}, {'0': 1}], qdate=20261029)
-        self.assertNotIn('1', typed['items'][0]['bins'])
-        self.assertIsNone(typed['items'][0]['up'])
-        self.assertEqual(typed['items'][0]['down'], 3)
-        self.assertTrue(any("'1'" in gap and '不同的值' in gap for gap in typed['gaps']))
-
-        only_conflict = parsed([{'1': 2}, {'1': 9}, {'1': 2}], qdate=20261029)
-        self.assertEqual(len(only_conflict['items']), 1)
-        self.assertEqual(only_conflict['items'][0]['bins'], {})
-        self.assertIsNone(only_conflict['items'][0]['up'])
-        self.assertIsNone(only_conflict['items'][0]['down'])
-        self.assertIsNone(only_conflict['items'][0]['flat'])
-        self.assertIsNone(only_conflict['items'][0]['sample'])
-        self.assertTrue(any("'1'" in gap and '不同的值' in gap for gap in only_conflict['gaps']))
-        self.assertFalse(any('没有可用家数' in gap for gap in only_conflict['gaps']))
-
-        flat_conflict = parsed([{'0': 0}, {'0': 4}, {'1': 2}, {'-1': 3}], qdate=20261029)
-        flat_item = flat_conflict['items'][0]
-        self.assertEqual(flat_item['bins'], {'1': 2, '-1': 3})
-        self.assertIsNone(flat_item['flat'])
-        self.assertEqual(flat_item['up'], 2)
-        self.assertEqual(flat_item['down'], 3)
-        self.assertIsNone(flat_item['sample'])
-        self.assertTrue(any("'0'" in gap and '不同的值' in gap for gap in flat_conflict['gaps']))
-
-        missing_up = parsed([{'-1': 4}, {'0': 1}], qdate=20261029)
-        missing_item = missing_up['items'][0]
-        self.assertEqual(missing_item['bins'], {'-1': 4, '0': 1})
-        self.assertIsNone(missing_item['up'])
-        self.assertEqual(missing_item['down'], 4)
-        self.assertEqual(missing_item['flat'], 1)
-        self.assertIsNone(missing_item['sample'])
-        self.assertTrue(any('部分' in note or '不完整' in note for note in missing_up['notes']))
-
-        bad = parsed([{'-1': 'bad'}, {'0': 1}, {'1': 2}, {'2': True}], qdate=20261029)
-        bad_item = bad['items'][0]
-        self.assertEqual(bad_item['bins'], {'0': 1, '1': 2})
-        self.assertIsNone(bad_item['up'])
-        self.assertIsNone(bad_item['down'])
-        self.assertEqual(bad_item['flat'], 1)
-        self.assertIsNone(bad_item['sample'])
-        self.assertTrue(any('无效' in gap for gap in bad['gaps']))
-        self.assertNotIn('2', bad_item['bins'])
-
-        zeros = parsed([{'-1': 0}, {'0': 0}, {'1': 0}], qdate=20261029)
-        self.assertEqual(zeros['items'][0]['bins'], {'-1': 0, '0': 0, '1': 0})
-        self.assertEqual((zeros['items'][0]['up'], zeros['items'][0]['down'], zeros['items'][0]['flat'], zeros['items'][0]['sample']), (0, 0, 0, 0))
-        self.assertEqual(zeros['gaps'], [])
-        self.assertFalse(any('部分' in note for note in zeros['notes']))
-
-        signed = parsed([{'-11': 1}, {'-2': 1}, {'-1': 3}, {'0': 4}, {'1': 5}, {'11': 6}], qdate=20261029)
-        signed_item = signed['items'][0]
-        self.assertEqual(signed_item['bins'], {'-11': 1, '-2': 1, '-1': 3, '0': 4, '1': 5, '11': 6})
-        self.assertEqual((signed_item['down'], signed_item['up'], signed_item['flat'], signed_item['sample']), (5, 11, 4, 20))
-        self.assertEqual(signed['gaps'], [])
-        self.assertNotIn('全市场家数', '\n'.join(signed['gaps'] + signed['notes']))
-
-        undated = parsed([{'-1': 2}, {'0': 3}, {'1': 4}])
+        self.assertEqual((item['down'], item['flat'], item['up'], item['sample']), (18, 2, 15, 35))
+        self.assertTrue(item['complete'])
+        self.assertEqual(item['aggregation_scope'], 'eastmoney_portal_distribution')
+        self.assertEqual(item['bin_labels']['11'], '涨停')
+        self.assertEqual(item['bin_labels']['-11'], '跌停')
+        self.assertIn('未涨停', item['bin_labels']['10'])
+        self.assertIn('未跌停', item['bin_labels']['-10'])
+        self.assertEqual(parse(full)['items'][0], item)
+        # 相同桶去重；不重复计入总体，极端未封板桶与涨跌停桶各计一次。
+        duplicate = parse([{k: v} for k, v in full.items()] + [{'11': 6}])
+        self.assertEqual(duplicate['items'][0], item)
+        self.assertEqual(duplicate['gaps'], [])
+        zeros = parse({str(i): 0 for i in range(-11, 12)})
+        self.assertEqual(zeros['items'][0]['sample'], 0)
+        self.assertTrue(zeros['items'][0]['complete'])
+        for key in ('-11', '-10', '-1', '0', '1', '10', '11'):
+            fields = dict(full)
+            del fields[key]
+            missing = parse(fields)
+            self.assertIsNone(missing['items'][0]['sample'])
+            self.assertFalse(missing['items'][0]['complete'])
+            self.assertNotIn(key, missing['items'][0]['bins'])
+            self.assertTrue(missing['gaps'])
+        partial = parse({'-1': 0, '0': 0, '1': 0})
+        self.assertEqual(partial['items'][0]['bins'], {'-1': 0, '0': 0, '1': 0})
+        self.assertEqual(tuple(partial['items'][0][k] for k in ('down', 'flat', 'up', 'sample')), (None, 0, None, None))
+        self.assertFalse(partial['items'][0]['complete'])
+        undated = parse(full, qdate=None)
         self.assertIsNone(undated['day'])
-        self.assertEqual(undated['items'][0]['bins'], {'-1': 2, '0': 3, '1': 4})
-        self.assertEqual(undated['items'][0]['sample'], 9)
-        self.assertEqual(undated['gaps'], [])
-        self.assertFalse(any('无法解析' in note for note in undated['notes']))
+        self.assertFalse(undated['items'][0]['complete'])
+        self.assertTrue(undated['gaps'])
 
-        for label, fenbu in (
-            ('empty', []),
-            ('non_dict', [1, {'1': 2}]),
-            ('none_item', [None]),
-            ('multi_key', [{'-1': 4, '1': 6}, {'-1': 100, '0': 9, '1': 100}]),
-            ('one_multi', [{'-1': 4, '1': 6}]),
-            ('mixed', [{'-1': 2}, {'0': 3, '1': 4}]),
-            ('empty_dict', [{}]),
-        ):
-            with self.subTest(label=label):
-                rejected = parsed(fenbu, qdate=20261029)
-                self.assertEqual(rejected['items'], [])
-                self.assertEqual(rejected['day'], '2026-10-29')
-                self.assertTrue(any('列表结构不支持' in gap for gap in rejected['gaps']))
-                self.assertFalse(any('未拼接' in gap or '多段' in gap for gap in rejected['gaps']))
-                self.assertFalse(any('未找到 fenbu' in gap for gap in rejected['gaps']))
+    def test_breadth_conflicts_invalid_and_unknown_fields_do_not_get_summed(self):
+        def parse(fenbu):
+            return em.fetch_market_breadth(fetch_bytes=json.dumps({
+                'data': {'qdate': 20261030, 'fenbu': fenbu}
+            }).encode())
+        full = {str(i): 1 for i in range(-11, 12)}
+        for bad in ('bad', True, -1, 1.0, None):
+            result = parse({**full, '1': bad})
+            item = result['items'][0]
+            self.assertIsNone(item['up'])
+            self.assertEqual(item['down'], 11)
+            self.assertNotIn('1', item['bins'])
+            self.assertIsNone(item['sample'])
+            self.assertTrue(any('无效' in g for g in result['gaps']))
+        for key in ('1', '-1', '0'):
+            result = parse([{k: v} for k, v in full.items()] + [{key: 2}, {key: 1}])
+            item = result['items'][0]
+            self.assertNotIn(key, item['bins'])
+            self.assertIsNone(item['sample'])
+            self.assertFalse(item['complete'])
+            self.assertTrue(any('不同的值' in g for g in result['gaps']))
+        typed = parse([{'1': 2}, {'1': 2.0}, {'0': 0}])
+        self.assertNotIn('1', typed['items'][0]['bins'])
+        for unknown in ('12', '-12', '01', '-0', 'total', 'time'):
+            result = parse({**full, unknown: 9})
+            self.assertNotIn(unknown, result['items'][0]['bins'])
+            self.assertEqual(tuple(result['items'][0][k] for k in ('up', 'down', 'flat', 'sample')), (None,) * 4)
+            self.assertFalse(result['items'][0]['complete'])
+        unknown_conflict = parse([{k: v} for k, v in full.items()] + [{'12': 1}, {'12': 2}])
+        self.assertIsNone(unknown_conflict['items'][0]['sample'])
+        self.assertFalse(unknown_conflict['items'][0]['complete'])
+        only_conflict = parse([{'1': 2}, {'1': 9}])
+        self.assertEqual(only_conflict['items'][0]['bins'], {})
+        self.assertIsNone(only_conflict['items'][0]['sample'])
+        for fenbu in ([], [1, {'1': 2}], [None], [{}], [{'0': 0, '1': 1}], [{'0': 0}, {'1': 1, '2': 2}]):
+            rejected = parse(fenbu)
+            self.assertEqual(rejected['items'], [])
+            self.assertTrue(any('列表结构不支持' in g for g in rejected['gaps']))
+        invalid_flat = parse({**full, '0': 'bad'})
+        self.assertIsNone(invalid_flat['items'][0]['flat'])
+        self.assertTrue(any('平盘' in g for g in invalid_flat['gaps']))
 
     def test_price_milli_contract_ignores_json_number_type(self):
         self.assertEqual(em._price(10000), 10.0)
@@ -609,7 +505,7 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(whole['items'][0]['latest_price'], fractional['items'][0]['latest_price'])
         self.assertEqual(whole['day'], DAY)
         note = '\n'.join(whole['notes'])
-        self.assertIn('p 按 milli/1000，整数与浮点同一数值结果一致；单位未经本仓库真实联网核对', note)
+        self.assertIn('p 按 milli/1000，整数与浮点同一数值结果一致；已核对门户显示函数和同期报价', note)
         self.assertNotIn('整数最新价', note)
         self.assertNotIn('浮点原样', note)
         for bad in (0, 0.0, True, '10000', None):
@@ -707,6 +603,37 @@ class ApiTests(unittest.TestCase):
         self.assertIn('date=20261029', calls[0])
         self.assertNotIn('/getTopicZBPool', calls[0])
         self.assertNotIn('/getTopicDTPool', calls[0])
+
+    def test_history_and_partial_distribution_metadata_survive_http(self):
+        pool = json.dumps({'data': {'qdate': 20261030, 'tc': 1, 'pool': [
+            {'c': '000002', 'm': 0, 'oc': 3, 'days': 2, 'p': 12500},
+        ]}}).encode()
+        partial = json.dumps({'data': {'qdate': 20261030, 'fenbu': [
+            {'-1': 2}, {'0': 1}, {'1': 3},
+        ]}}).encode()
+        calls = []
+
+        def fetch(url):
+            calls.append(url)
+            return partial if 'getTopicZDFenBu' in url else pool
+
+        with patch('em_market_backup._http_get', fetch), patch('em_market_backup._acquire'):
+            status, body = self.request(f'/api/backup/em-pools?date={DAY}&kind=down&allow_network=1')
+            wide, breadth = self.request(f'/api/backup/em-pools?date={DAY}&kind=breadth&allow_network=1')
+        self.assertEqual(status, 200)
+        self.assertEqual((body['day'], body['requested_day'], body['upstream_qdate']), (DAY, DAY, '2026-10-30'))
+        self.assertEqual(body['date_basis'], 'portal_date_parameter')
+        self.assertTrue(body['list_complete'])
+        self.assertEqual(body['latest_price_unit'], 'CNY')
+        self.assertEqual(body['items'][0]['latest_price'], 12.5)
+        self.assertEqual(body['items'][0]['open_count'], 3)
+        self.assertIn('sort=fund%3Aasc', calls[0])
+        self.assertEqual(wide, 200)
+        self.assertEqual(breadth['day'], '2026-10-30')  # 不伪装成请求的历史日。
+        self.assertFalse(breadth['items'][0]['complete'])
+        self.assertIsNone(breadth['items'][0]['sample'])
+        self.assertTrue(breadth['gaps'])
+        self.assertEqual(len(calls), 2)
 
     def test_demo_compare_is_synthetic_and_research_is_untouched(self):
         from demo import Demo

@@ -91,11 +91,13 @@ python3 server.py
 
 行情数据接口和 AI 模型是两项独立配置，都可能产生服务商费用。技术分析与批量技术报告可以不使用 AI。开启 AI 时，分析材料会发给你配置的模型服务，请先核对服务与数据使用范围。
 
+同花顺 Key 仍是日 K 与交易日历的主路径。仓库另有可选、默认不联网的免 Key 备源库（腾讯前复权日 K，以及可选的 baostock 日 K / 交易日历），只在调用方显式选源时使用，不会在缺少 Key 时自动切换。教学对照，不进入演示拉数。用途和条款风险见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 ### 可选对照：东方财富涨停池（默认关闭）
 
 `em_market_backup.py` 只在调用方把 `allow_network=True` 时，才访问东方财富门户的涨停、炸板、跌停名单和当日涨跌分布。它用来对照代码集合或家数，**不会**在同花顺失败时自动顶上，也**不会**把结果写进短线温度、炸板率或研究摘要。演示模式只给合成对照表；带 `allow_network=1` 会直接拒绝。
 
-这条备源的风险高于交易所/指数公司官方文件，也高于可选的 baostock 日 K：它不是官方接口，需要自行限速，许可待审，取回的内容不得再分发。维护者复核前不要打开真实拉取。说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+这条备源的风险高于交易所/指数公司官方文件，也高于可选的 baostock 日 K：它不是官方接口，需要自行限速，许可待审，取回的内容不得再分发。维护者复核前不要打开真实拉取。公开 URL、页面 `ut` 参数或客户端 1 秒限速不等于已取得使用或再分发许可；须结合东方财富[法律声明](https://about.eastmoney.com/home/disclaimer)与[服务协议](https://about.eastmoney.com/home/protocol)核对事先书面许可等要求。代码修好也不等于真实拉取、对外展示或再分发获准。说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 <a id="contribute"></a>
 
@@ -140,6 +142,12 @@ python3 scripts/check_release.py
 Node.js 仅用于开发测试，运行应用不需要 Node，开发建议使用 Node 22 或更新版本。CI 配置覆盖 Python 3.11、3.12、3.14；配置不代表已经在线执行成功，结果以仓库 Actions 为准。
 
 </details>
+
+## 可选：指数官方文件（默认不联网）
+
+`index_official.py` 提供只读函数 `fetch_constituents`、`fetch_weights`、`fetch_valuation`，用来对照一只指数在官方文件里的成分、权重和估值列。入口是中证指数（csindex 的 cons / closeweight / indicator 文件）或国证指数（cnindex 的样本导出与估值文件）。调用方要显式选择来源；一次只读那一条路径。
+
+默认 `allow_network=False`。没有传入文件字节时只返回缺口，不会在同花顺失败后自动改走这里。成分数量、权重和文件日期用于教学对照。指数点位与估值字段不是买卖建议，模块也不做个股估值筛选。官方文件的再分发和商用条款未审，程序许可不含数据再分发权，维护者复核前不要联网拉取或把结果放进发行包。详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 许可与来源
 

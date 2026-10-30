@@ -187,6 +187,48 @@ test('real 250-bar context produces RSI and MACD matching Python at every visibl
     near(C.indicatorReading('macd',f.point).value,2*(f.point.macd_dif-f.point.macd_dea));
   }
 });
+test('self-check notes stay specific, and the article escapes them under 如何自查',()=>{
+  const ids=['adjust','missing','assessment','compare','disclosure','valuation','limits','return'];
+  const marks={adjust:/复权/,missing:/停牌/,assessment:/不是上涨概率/,compare:/不可比/,disclosure:/报告期/,valuation:/不做估值筛选/,limits:/价格限制/,return:/涨跌幅/};
+  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const blobs=[];
+  for(const id of ids){
+    const term=C.terms.find(t=>t.id===id);
+    assert.ok(term,id);
+    const lines=Array.isArray(term.selfCheck)?term.selfCheck:[term.selfCheck];
+    assert.ok(lines.length&&lines.every(line=>typeof line==='string'&&line.trim()),id);
+    const blob=lines.join('\n');
+    assert.match(blob,/来源/,id);
+    assert.match(blob,/未查到/,id);
+    assert.match(blob,/年份|报告期/,id);
+    assert.match(blob,marks[id],id);
+    assert.doesNotMatch(blob,/应买|应卖|看多|看空|目标价|胜率/,id);
+    assert.doesNotMatch(blob.replaceAll('不是上涨概率',''),/上涨概率/,id);
+    const html=C.selfCheckHTML(term,esc);
+    assert.match(html,/class="guide-self-check"/);
+    assert.match(html,/<h4>如何自查<\/h4>/);
+    assert.match(html,/未查到/);
+    blobs.push(blob);
+  }
+  assert.equal(new Set(blobs).size,blobs.length);
+  assert.equal(C.terms.find(t=>t.id==='ma').selfCheck,undefined);
+  assert.equal(C.selfCheckHTML(C.terms.find(t=>t.id==='ma'),esc),'');
+  assert.equal(C.selfCheckHTML({selfCheck:'   '},esc),'');
+  assert.equal(C.selfCheckHTML({selfCheck:['','  ']},esc),'');
+  const injected=C.selfCheckHTML({selfCheck:['来源与年份 <script>','未查到 "\'&']},esc);
+  assert.match(injected,/<h4>如何自查<\/h4>/);
+  assert.match(injected,/来源与年份 &lt;script&gt;/);
+  assert.match(injected,/未查到 &quot;&#39;&amp;/);
+  assert.equal(injected.includes('<script>'),false);
+  const guide=fs.readFileSync('web/guide.js','utf8');
+  const mis=guide.indexOf('容易看错的地方');
+  const block=guide.indexOf('C.selfCheckHTML(term,esc)');
+  const where=guide.indexOf('在观市哪里看');
+  assert.ok(mis>0&&block>mis&&where>block);
+  const css=fs.readFileSync('web/guide.css','utf8');
+  assert.match(css,/\.guide-self-check\{/);
+  assert.match(css,/max-width:760px\)\{\.guide-self-check/);
+});
 test('RSI and MACD reset at a visible gap even when context contains a valid copy',()=>{
   const rows=datedBars(Array.from({length:250},(_,i)=>20+i*.01)),items=rows.slice(-100).map(b=>({...b}));items[10].close_price=null;
   const p=payload(items,{context_items:rows}),series=C.prepareMarket(p,'000811.SZ',p.end);

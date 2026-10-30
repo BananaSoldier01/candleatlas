@@ -11,7 +11,8 @@
 也不和同花顺 special-data 拼成一条序列。
 
 涨跌分布只认 getTopicZDFenBu 的当日快照，请求里没有历史日参数，不认历史日。
-字段形状依据公开页面常见返回，本仓库没有做真实联网核对。
+名单观察日只采用已与请求日对齐的响应日期（data.qdate 或 data.date）。缺日期标未核验；错日、非法日或晚于请求日的响应不作为该观察日有效名单。
+字段 p 按 milli/1000 换算，整数与浮点同一数值结果一致。字段形状与该单位均未经本仓库真实联网核对。
 
 客户端自我限速 MIN_INTERVAL_SECONDS（不少于 1 秒）。这不表示门户允许采集。
 页面查询参数 ut 是门户网页自带的公开参数，不是发给本项目的密钥；缺口文本里省略它。
@@ -52,6 +53,10 @@ RATE_LIMIT_NOTE = (
 STATUS_NOTE = '涨停、炸板、跌停和涨跌家数只记录上游给出的状态，不是买卖建议，也不保证次日涨跌。'
 SEPARATE_NOTE = '与同花顺 special-data 或全市场快照并列。失败不改走同花顺，成功也不写入研究摘要或炸板率。'
 SNAPSHOT_NOTE = '涨跌分布上游是当日快照，不认历史日。不能把某一天的快照填进其他观察日。'
+PRICE_NOTE = (
+    'p 按 milli/1000，整数与浮点同一数值结果一致；单位未经本仓库真实联网核对。'
+    '缺失、0、非有限或非数字留空，不补成 0。'
+)
 
 _RATE_LOCK = threading.Lock()
 _LAST_REQUEST_AT = None
@@ -248,11 +253,10 @@ def _clock_text(value):
 
 
 def _price(value):
+    # 字段 p 的单位契约是 milli（千分之一元），不按 JSON 的 int/float 分别缩放。
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not _finite(value) or value <= 0:
         return None
-    if isinstance(value, int):
-        return value / 1000
-    return value
+    return value / 1000
 
 
 def _positive_int(value):
@@ -349,28 +353,61 @@ def _row(row, kind, index, gaps):
     }
 
 
-def _parse_pool(payload, kind, day, shown):
+def _parse_pool(payload, kind, requested_day, shown):
+    """核验响应日期后再决定是否采用 pool。day 只写已核验且与请求日相同的响应日。"""
     gaps = []
-    notes = ['整数最新价按门户常见口径除以 1000；缺失或 0 留空，不补成 0。名单口径未经本仓库真实联网核对。']
+    notes = [PRICE_NOTE]
     if not isinstance(payload, dict):
-        return _envelope(kind, day, [], [f'响应不是 JSON 对象。试过的路径：{shown}。未改试其他来源。'], notes)
+        return _envelope(kind, None, [], [f'响应不是 JSON 对象。试过的路径：{shown}。未改试其他来源。'], notes)
     rc = payload.get('rc', 0)
     if rc not in (0, '0', None):
-        return _envelope(kind, day, [], [f'上游 rc={rc!r}，未采用名单。试过的路径：{shown}。未改试其他来源。'], notes)
-    data = payload.get('data')
-    if data is None:
-        notes.append('上游 data 为空，按空池记录。未改试其他来源。')
-        return _envelope(kind, day, [], gaps, notes)
-    if not isinstance(data, dict) or not isinstance(data.get('pool'), list):
-        return _envelope(kind, day, [], [f'上游缺少 pool 列表。试过的路径：{shown}。未改试其他来源。'], notes)
+        return _envelope(kind, None, [], [f'上游 rc={rc!r}，未采用名单。试过的路径：{shown}。未改试其他来源。'], notes)
+    if 'data' not in payload or payload.get('data') is None:
+        detail = '上游 data 缺失' if 'data' not in payload else '上游 data 为 null'
+        gap = f'{detail}，没有可核验日期，名单未核验。试过的路径：{shown}。未改试其他来源。'
+        return _envelope(kind, None, [], [gap], notes)
+    data = payload['data']
+    if not isinstance(data, dict):
+        return _envelope(kind, None, [], [f'上游 data 不是对象，日期与名单均未核验。试过的路径：{shown}。未改试其他来源。'], notes)
+    state, response_day, raw_info = _response_calendar_day(data)
+    if state == 'invalid':
+        field, raw = raw_info
+        gap = (
+            f'响应 {field}={raw!r} 不是合法公历日期，不能作为观察日有效名单。'
+            f'试过的路径：{shown}。未改试其他来源。'
+        )
+        return _envelope(kind, None, [], [gap], notes)
+    if state == 'ok' and response_day != requested_day:
+        if response_day > requested_day:
+            relation = f'响应日期 {response_day} 晚于请求日 {requested_day}'
+        else:
+            relation = f'响应日期 {response_day} 早于请求日 {requested_day}'
+        gap = f'{relation}，不能作为该观察日的有效名单。试过的路径：{shown}。未改试其他来源。'
+        return _envelope(kind, None, [], [gap], notes)
+    verified_day = response_day if state == 'ok' else None
+    if state == 'absent':
+        gaps.append(
+            f'响应未提供 data.qdate 或 data.date，日期未核验，不能把请求日 {requested_day} 写成已核对的观察日。'
+            f'试过的路径：{shown}。未改试其他来源。'
+        )
+    if not isinstance(data.get('pool'), list):
+        gaps.append(f'上游缺少 pool 列表。试过的路径：{shown}。未改试其他来源。')
+        return _envelope(kind, verified_day, [], gaps, notes)
     pool = data['pool']
     total = data.get('tc')
+    tc_matches = False
     if isinstance(total, bool) or (total is not None and not isinstance(total, int)):
         gaps.append('上游 tc 不是整数，无法核对是否取全。未自动翻页。')
     elif isinstance(total, int) and total != len(pool):
         gaps.append(f'上游 tc={total} 与本页 {len(pool)} 条不一致。未自动翻页，也未改试其他来源。')
+    elif isinstance(total, int) and total == len(pool):
+        tc_matches = True
     if len(pool) >= PAGE_SIZE:
         gaps.append(f'本页条数达到 pagesize={PAGE_SIZE} 上限，未自动翻页，名单可能不完整。')
+    if verified_day is not None and len(pool) == 0 and tc_matches:
+        notes.append('上游 pool 为空，日期已核验，tc 与条数一致，按空池记录。')
+    elif verified_day is not None and len(pool) == 0 and total is None:
+        notes.append('上游 pool 为空，但未给出 tc，不把缺失记成已核对的零家。')
     items, seen = [], set()
     for index, row in enumerate(pool, 1):
         if not isinstance(row, dict):
@@ -384,7 +421,7 @@ def _parse_pool(payload, kind, day, shown):
             continue
         seen.add(parsed['thscode'])
         items.append(parsed)
-    return _envelope(kind, day, items, gaps, notes)
+    return _envelope(kind, verified_day, items, gaps, notes)
 
 
 def _iso_from_snapshot(value):
@@ -402,6 +439,26 @@ def _iso_from_snapshot(value):
         return None
 
 
+def _response_calendar_day(data):
+    """解析 data.qdate，没有该字段时再看 data.date。
+
+    返回 (state, iso, raw_info)。state 为 absent、invalid 或 ok。
+    只接受 YYYYMMDD 的 int/str，或 YYYY-MM-DD，并做公历校验。
+    """
+    if not isinstance(data, dict):
+        return 'absent', None, None
+    if 'qdate' in data:
+        field, raw = 'qdate', data.get('qdate')
+    elif 'date' in data:
+        field, raw = 'date', data.get('date')
+    else:
+        return 'absent', None, None
+    iso = _iso_from_snapshot(raw)
+    if iso is None:
+        return 'invalid', None, (field, raw)
+    return 'ok', iso, (field, raw)
+
+
 def _parse_breadth(payload, shown):
     notes = [SNAPSHOT_NOTE, '涨跌分布的分桶沿用上游字段，与同花顺七组涨跌分布不是同一口径，禁止合并或互相补零。']
     if not isinstance(payload, dict):
@@ -412,9 +469,12 @@ def _parse_breadth(payload, shown):
     data = payload.get('data')
     if not isinstance(data, dict):
         return _envelope('breadth', None, [], [f'未找到涨跌分布 data。试过的路径：{shown}。未改读其他接口。'], notes)
-    day = _iso_from_snapshot(data.get('qdate', data.get('date')))
-    if ('qdate' in data or 'date' in data) and day is None:
+    state, day, _raw = _response_calendar_day(data)
+    if state == 'invalid':
         notes.append('快照里的日期无法解析，day 留空。不把本机今天填进去。')
+        day = None
+    elif state != 'ok':
+        day = None
     fenbu = data.get('fenbu')
     gaps = []
     if isinstance(fenbu, list):
@@ -425,18 +485,63 @@ def _parse_breadth(payload, shown):
         gaps.append(f'未找到 fenbu 对象。试过的路径：{shown}。未改读其他接口。')
         return _envelope('breadth', day, [], gaps, notes)
     bins = {}
+    positive, negative = [], []
+    flat_value = None
+    saw_flat = False
+    invalid_positive = invalid_negative = invalid_flat = False
     for key, value in fenbu.items():
-        if isinstance(key, str) and re.fullmatch(r'-?\d+', key) and isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            bins[key] = value
-        else:
+        if not isinstance(key, str) or not re.fullmatch(r'-?\d+', key) or str(int(key)) != key:
             gaps.append(f'涨跌分布字段 {key!r} 不能当作家数，已跳过，未补 0。')
-    if not bins:
+            continue
+        number = int(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            gaps.append(f'涨跌分布字段 {key!r} 的值无效，该方向不完整，未补 0。')
+            if number > 0:
+                invalid_positive = True
+            elif number < 0:
+                invalid_negative = True
+            else:
+                invalid_flat = True
+            continue
+        bins[key] = value
+        if number > 0:
+            positive.append(value)
+        elif number < 0:
+            negative.append(value)
+        else:
+            saw_flat = True
+            flat_value = value
+    # 没有已核验的「省略即零」规则：某一方向完全没有有效桶，或该方向有无效桶，总数保持未知。
+    if not bins and not (invalid_positive or invalid_negative or invalid_flat):
         gaps.append(f'fenbu 里没有可用家数。试过的路径：{shown}。未改读其他接口。')
         return _envelope('breadth', day, [], gaps, notes)
-    up = sum(value for key, value in bins.items() if int(key) > 0)
-    down = sum(value for key, value in bins.items() if int(key) < 0)
-    flat = bins.get('0')
-    sample = up + down + flat if flat is not None else None
+    if invalid_positive:
+        up = None
+        gaps.append('上涨方向有无效桶，up 记为未知，未把其余上涨桶加总成完整家数。')
+    elif positive:
+        up = sum(positive)
+    else:
+        up = None
+    if invalid_negative:
+        down = None
+        gaps.append('下跌方向有无效桶，down 记为未知，未把其余下跌桶加总成完整家数。')
+    elif negative:
+        down = sum(negative)
+    else:
+        down = None
+    if invalid_flat:
+        flat = None
+        gaps.append('平盘桶值无效，flat 记为未知，未补 0。')
+    elif saw_flat:
+        flat = flat_value
+    else:
+        flat = None
+    if up is not None and down is not None and flat is not None:
+        sample = up + down + flat
+    else:
+        sample = None
+        if any(part is not None for part in (up, down, flat)):
+            notes.append('涨跌分布不完整，已保留的计数是部分结果；未知方向未补 0，sample 不把未知当成 0。')
     item = {'bins': bins, 'up': up, 'down': down, 'flat': flat, 'sample': sample}
     return _envelope('breadth', day, [item], gaps, notes)
 
@@ -454,14 +559,14 @@ def fetch_limit_pool(day, kind='up', *, allow_network=False, fetch_bytes=None, f
     if fetch_bytes is not None:
         payload, gaps = _load_body(fetch_bytes, shown)
         if payload is None:
-            return _envelope(kind, iso, [], gaps, [])
+            return _envelope(kind, None, [], gaps, [])
         return _parse_pool(payload, kind, iso, shown)
     if not allow_network:
-        return _envelope(kind, iso, [], [
+        return _envelope(kind, None, [], [
             f'未联网：allow_network 为 false，且没有提供响应字节。未请求 {shown}。'
         ], [])
     request_url, shown = _pool_urls(kind, compact)
-    loaded = _read_remote(kind, iso, request_url, shown, fetch, clock, sleeper)
+    loaded = _read_remote(kind, None, request_url, shown, fetch, clock, sleeper)
     if isinstance(loaded, _Gap):
         return loaded.envelope
     return _parse_pool(loaded, kind, iso, shown)

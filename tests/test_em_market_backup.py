@@ -181,21 +181,20 @@ class PoolTests(unittest.TestCase):
         em.fetch_market_breadth(allow_network=True, fetch=fetch, clock=clock, sleeper=sleeper)
         self.assertEqual(waits, [1.0])
 
-    def test_breadth_snapshot_does_not_zero_fill_or_join_segments(self):
+    def test_breadth_snapshot_merges_single_key_buckets_without_zero_fill(self):
         result = em.fetch_market_breadth(fetch_bytes=load('breadth.json'))
         self.assertEqual(result['kind'], 'breadth')
         self.assertEqual(result['day'], '2026-10-29')
         self.assertIn('不认历史日', '\n'.join(result['notes']))
         item = result['items'][0]
-        self.assertEqual(item['up'], 8)
-        self.assertEqual(item['down'], 4)
-        self.assertIsNone(item['flat'])
-        self.assertIsNone(item['sample'])
-        self.assertNotEqual(item['up'], 0)
-        self.assertNotEqual(item['down'], 0)
-        self.assertNotIn('0', item['bins'])
-        self.assertTrue(any('未拼接' in gap for gap in result['gaps']))
-        self.assertTrue(any('部分' in note or '不完整' in note for note in result['notes']))
+        self.assertEqual(item['bins'], {'-1': 2, '0': 3, '1': 4})
+        self.assertEqual(item['up'], 4)
+        self.assertEqual(item['down'], 2)
+        self.assertEqual(item['flat'], 3)
+        self.assertEqual(item['sample'], 9)
+        self.assertEqual(result['gaps'], [])
+        self.assertFalse(any('未拼接' in gap or '多段' in gap for gap in result['gaps']))
+        self.assertNotIn('全市场家数', '\n'.join(result['gaps'] + result['notes']))
         other = em.fetch_market_breadth(fetch_bytes=b'{"data": {"f104": 10, "f105": 3, "qdate": 20260231}}')
         self.assertEqual(other['items'], [])
         self.assertIsNone(other['day'])
@@ -453,13 +452,15 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(item['flat'], 0)
         self.assertIsNone(item['sample'])
 
-        result, item = item_of([{'-1': 4, '1': 6}, {'-1': 100, '0': 9, '1': 100}])
-        self.assertEqual(item['up'], 6)
-        self.assertEqual(item['down'], 4)
-        self.assertIsNone(item['flat'])
-        self.assertIsNone(item['sample'])
-        self.assertNotIn('0', item['bins'])
-        self.assertTrue(any('未拼接' in gap for gap in result['gaps']))
+        unsupported = em.fetch_market_breadth(fetch_bytes=json.dumps({
+            'rc': 0,
+            'data': {'qdate': 20261029, 'fenbu': [{'-1': 4, '1': 6}, {'-1': 100, '0': 9, '1': 100}]},
+        }).encode())
+        self.assertEqual(unsupported['day'], '2026-10-29')
+        self.assertEqual(unsupported['items'], [])
+        self.assertTrue(any('不支持' in gap for gap in unsupported['gaps']))
+        self.assertFalse(any('未拼接' in gap or '多段' in gap for gap in unsupported['gaps']))
+        self.assertFalse(any('未找到 fenbu' in gap for gap in unsupported['gaps']))
 
         result, item = item_of({'0': 'bad', '1': 2, '-1': 3})
         self.assertIsNone(item['flat'])
@@ -468,6 +469,123 @@ class PoolTests(unittest.TestCase):
         self.assertIsNone(item['sample'])
         self.assertNotIn('0', item['bins'])
         self.assertTrue(any('平盘' in gap for gap in result['gaps']))
+
+    def test_breadth_single_key_list_is_one_snapshot(self):
+        def parsed(fenbu, **fields):
+            body = json.dumps({'rc': 0, 'data': {'fenbu': fenbu, **fields}}).encode()
+            return em.fetch_market_breadth(fetch_bytes=body)
+
+        result = parsed([{'-1': 2}, {'0': 3}, {'1': 4}], qdate=20261029)
+        item = result['items'][0]
+        self.assertEqual(item['bins'], {'-1': 2, '0': 3, '1': 4})
+        self.assertEqual((item['up'], item['down'], item['flat'], item['sample']), (4, 2, 3, 9))
+        self.assertEqual(result['gaps'], [])
+        self.assertFalse(any('未拼接' in gap or '多段' in gap for gap in result['gaps']))
+        self.assertNotIn('全市场家数', '\n'.join(result['gaps'] + result['notes']))
+
+        dictated = parsed({'-1': 2, '0': 3, '1': 4}, qdate=20261029)
+        self.assertEqual(dictated['items'][0], result['items'][0])
+        self.assertEqual(dictated['gaps'], [])
+
+        deduped = parsed([{'-1': 2}, {'1': 4}, {'1': 4}, {'0': 0}, {'-1': 2}, {'0': 0}], qdate=20261029)
+        deduped_item = deduped['items'][0]
+        self.assertEqual(deduped_item['bins'], {'-1': 2, '1': 4, '0': 0})
+        self.assertEqual((deduped_item['up'], deduped_item['down'], deduped_item['flat'], deduped_item['sample']), (4, 2, 0, 6))
+        self.assertEqual(deduped['gaps'], [])
+
+        conflict = parsed([{'1': 2}, {'1': 9}, {'2': 5}, {'-1': 3}, {'0': 1}], qdate=20261029)
+        conflict_item = conflict['items'][0]
+        self.assertEqual(conflict_item['bins'], {'2': 5, '-1': 3, '0': 1})
+        self.assertIsNone(conflict_item['up'])
+        self.assertEqual(conflict_item['down'], 3)
+        self.assertEqual(conflict_item['flat'], 1)
+        self.assertIsNone(conflict_item['sample'])
+        self.assertNotIn(2, conflict_item['bins'].values())
+        self.assertNotIn(9, conflict_item['bins'].values())
+        self.assertTrue(any('不同的值' in gap and "'1'" in gap for gap in conflict['gaps']))
+        self.assertTrue(any('上涨方向有键值冲突' in gap for gap in conflict['gaps']))
+        self.assertFalse(any('未拼接' in gap or '多段' in gap for gap in conflict['gaps']))
+
+        typed = parsed([{'1': 2}, {'1': 2.0}, {'-1': 3}, {'0': 1}], qdate=20261029)
+        self.assertNotIn('1', typed['items'][0]['bins'])
+        self.assertIsNone(typed['items'][0]['up'])
+        self.assertEqual(typed['items'][0]['down'], 3)
+        self.assertTrue(any("'1'" in gap and '不同的值' in gap for gap in typed['gaps']))
+
+        only_conflict = parsed([{'1': 2}, {'1': 9}, {'1': 2}], qdate=20261029)
+        self.assertEqual(len(only_conflict['items']), 1)
+        self.assertEqual(only_conflict['items'][0]['bins'], {})
+        self.assertIsNone(only_conflict['items'][0]['up'])
+        self.assertIsNone(only_conflict['items'][0]['down'])
+        self.assertIsNone(only_conflict['items'][0]['flat'])
+        self.assertIsNone(only_conflict['items'][0]['sample'])
+        self.assertTrue(any("'1'" in gap and '不同的值' in gap for gap in only_conflict['gaps']))
+        self.assertFalse(any('没有可用家数' in gap for gap in only_conflict['gaps']))
+
+        flat_conflict = parsed([{'0': 0}, {'0': 4}, {'1': 2}, {'-1': 3}], qdate=20261029)
+        flat_item = flat_conflict['items'][0]
+        self.assertEqual(flat_item['bins'], {'1': 2, '-1': 3})
+        self.assertIsNone(flat_item['flat'])
+        self.assertEqual(flat_item['up'], 2)
+        self.assertEqual(flat_item['down'], 3)
+        self.assertIsNone(flat_item['sample'])
+        self.assertTrue(any("'0'" in gap and '不同的值' in gap for gap in flat_conflict['gaps']))
+
+        missing_up = parsed([{'-1': 4}, {'0': 1}], qdate=20261029)
+        missing_item = missing_up['items'][0]
+        self.assertEqual(missing_item['bins'], {'-1': 4, '0': 1})
+        self.assertIsNone(missing_item['up'])
+        self.assertEqual(missing_item['down'], 4)
+        self.assertEqual(missing_item['flat'], 1)
+        self.assertIsNone(missing_item['sample'])
+        self.assertTrue(any('部分' in note or '不完整' in note for note in missing_up['notes']))
+
+        bad = parsed([{'-1': 'bad'}, {'0': 1}, {'1': 2}, {'2': True}], qdate=20261029)
+        bad_item = bad['items'][0]
+        self.assertEqual(bad_item['bins'], {'0': 1, '1': 2})
+        self.assertIsNone(bad_item['up'])
+        self.assertIsNone(bad_item['down'])
+        self.assertEqual(bad_item['flat'], 1)
+        self.assertIsNone(bad_item['sample'])
+        self.assertTrue(any('无效' in gap for gap in bad['gaps']))
+        self.assertNotIn('2', bad_item['bins'])
+
+        zeros = parsed([{'-1': 0}, {'0': 0}, {'1': 0}], qdate=20261029)
+        self.assertEqual(zeros['items'][0]['bins'], {'-1': 0, '0': 0, '1': 0})
+        self.assertEqual((zeros['items'][0]['up'], zeros['items'][0]['down'], zeros['items'][0]['flat'], zeros['items'][0]['sample']), (0, 0, 0, 0))
+        self.assertEqual(zeros['gaps'], [])
+        self.assertFalse(any('部分' in note for note in zeros['notes']))
+
+        signed = parsed([{'-11': 1}, {'-2': 1}, {'-1': 3}, {'0': 4}, {'1': 5}, {'11': 6}], qdate=20261029)
+        signed_item = signed['items'][0]
+        self.assertEqual(signed_item['bins'], {'-11': 1, '-2': 1, '-1': 3, '0': 4, '1': 5, '11': 6})
+        self.assertEqual((signed_item['down'], signed_item['up'], signed_item['flat'], signed_item['sample']), (5, 11, 4, 20))
+        self.assertEqual(signed['gaps'], [])
+        self.assertNotIn('全市场家数', '\n'.join(signed['gaps'] + signed['notes']))
+
+        undated = parsed([{'-1': 2}, {'0': 3}, {'1': 4}])
+        self.assertIsNone(undated['day'])
+        self.assertEqual(undated['items'][0]['bins'], {'-1': 2, '0': 3, '1': 4})
+        self.assertEqual(undated['items'][0]['sample'], 9)
+        self.assertEqual(undated['gaps'], [])
+        self.assertFalse(any('无法解析' in note for note in undated['notes']))
+
+        for label, fenbu in (
+            ('empty', []),
+            ('non_dict', [1, {'1': 2}]),
+            ('none_item', [None]),
+            ('multi_key', [{'-1': 4, '1': 6}, {'-1': 100, '0': 9, '1': 100}]),
+            ('one_multi', [{'-1': 4, '1': 6}]),
+            ('mixed', [{'-1': 2}, {'0': 3, '1': 4}]),
+            ('empty_dict', [{}]),
+        ):
+            with self.subTest(label=label):
+                rejected = parsed(fenbu, qdate=20261029)
+                self.assertEqual(rejected['items'], [])
+                self.assertEqual(rejected['day'], '2026-10-29')
+                self.assertTrue(any('列表结构不支持' in gap for gap in rejected['gaps']))
+                self.assertFalse(any('未拼接' in gap or '多段' in gap for gap in rejected['gaps']))
+                self.assertFalse(any('未找到 fenbu' in gap for gap in rejected['gaps']))
 
     def test_price_milli_contract_ignores_json_number_type(self):
         self.assertEqual(em._price(10000), 10.0)

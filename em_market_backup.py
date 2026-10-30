@@ -11,6 +11,7 @@
 也不和同花顺 special-data 拼成一条序列。
 
 涨跌分布只认 getTopicZDFenBu 的当日快照，请求里没有历史日参数，不认历史日。
+fenbu 可以是分桶字典，或同一快照里多个单键分桶对象组成的列表；这种列表合并成一份分布。不是这种列表形状时整份不采用。
 名单观察日只采用已与请求日对齐的响应日期（data.qdate 或 data.date）。缺日期标未核验；错日、非法日或晚于请求日的响应不作为该观察日有效名单。
 字段 p 按 milli/1000 换算，整数与浮点同一数值结果一致。字段形状与该单位均未经本仓库真实联网核对。
 
@@ -459,6 +460,77 @@ def _response_calendar_day(data):
     return 'ok', iso, (field, raw)
 
 
+def _bucket_side(key):
+    """Canonical fenbu key → 'up', 'down', 'flat', or None.
+
+    11 与 -11 只按正负号归入方向，不另赋官方总家数含义。
+    """
+    if not isinstance(key, str) or not re.fullmatch(r'-?\d+', key):
+        return None
+    number = int(key)
+    if str(number) != key:
+        return None
+    if number > 0:
+        return 'up'
+    if number < 0:
+        return 'down'
+    return 'flat'
+
+
+def _same_fenbu_value(left, right):
+    return type(left) is type(right) and left == right
+
+
+def _normalize_fenbu(fenbu, gaps):
+    """把 fenbu 收成一份分桶。
+
+    返回 (status, mapping, conflict_sides)。status 为 ok 或 unsupported。
+    字典原样返回。列表只在每一项都是恰好一个键的字典时，视为同一快照的分桶并合并，
+    不按跨快照分段拼接。同键同值（类型与数值都相同）去重；同键异值记缺口，不覆盖、不相加。
+    空列表、非字典项、多键项或混合结构整份不支持，不取第一段。
+    """
+    if not isinstance(fenbu, list):
+        return 'ok', fenbu, set()
+    single_key = fenbu and all(isinstance(item, dict) and len(item) == 1 for item in fenbu)
+    if not single_key:
+        gaps.append(
+            '涨跌分布 fenbu 的列表结构不支持：只接受同一快照里每一项恰好一个键的分桶。'
+            '空列表、非对象、多键对象或混合结构都不会取第一段当整份分布。'
+        )
+        return 'unsupported', None, set()
+    merged = {}
+    conflict_keys = set()
+    conflict_sides = set()
+    for item in fenbu:
+        key, value = next(iter(item.items()))
+        if key in conflict_keys:
+            continue
+        if key not in merged:
+            merged[key] = value
+            continue
+        if _same_fenbu_value(merged[key], value):
+            continue
+        del merged[key]
+        conflict_keys.add(key)
+        gaps.append(f'涨跌分布字段 {key!r} 在同一份分布里出现不同的值，未覆盖，也未相加。')
+        side = _bucket_side(key)
+        if side is not None:
+            conflict_sides.add(side)
+    return 'ok', merged, conflict_sides
+
+
+def _direction_count(values, invalid, conflict, conflict_gap, invalid_gap, gaps):
+    if invalid or conflict:
+        if conflict:
+            gaps.append(conflict_gap)
+        if invalid:
+            gaps.append(invalid_gap)
+        return None
+    if values:
+        return sum(values)
+    return None
+
+
 def _parse_breadth(payload, shown):
     notes = [SNAPSHOT_NOTE, '涨跌分布的分桶沿用上游字段，与同花顺七组涨跌分布不是同一口径，禁止合并或互相补零。']
     if not isinstance(payload, dict):
@@ -475,12 +547,10 @@ def _parse_breadth(payload, shown):
         day = None
     elif state != 'ok':
         day = None
-    fenbu = data.get('fenbu')
     gaps = []
-    if isinstance(fenbu, list):
-        if len(fenbu) > 1:
-            gaps.append('涨跌分布返回多段，只读取第一段，未拼接。')
-        fenbu = fenbu[0] if fenbu else None
+    status, fenbu, conflict_sides = _normalize_fenbu(data.get('fenbu'), gaps)
+    if status != 'ok':
+        return _envelope('breadth', day, [], gaps, notes)
     if not isinstance(fenbu, dict):
         gaps.append(f'未找到 fenbu 对象。试过的路径：{shown}。未改读其他接口。')
         return _envelope('breadth', day, [], gaps, notes)
@@ -490,48 +560,56 @@ def _parse_breadth(payload, shown):
     saw_flat = False
     invalid_positive = invalid_negative = invalid_flat = False
     for key, value in fenbu.items():
-        if not isinstance(key, str) or not re.fullmatch(r'-?\d+', key) or str(int(key)) != key:
+        side = _bucket_side(key)
+        if side is None:
             gaps.append(f'涨跌分布字段 {key!r} 不能当作家数，已跳过，未补 0。')
             continue
-        number = int(key)
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             gaps.append(f'涨跌分布字段 {key!r} 的值无效，该方向不完整，未补 0。')
-            if number > 0:
+            if side == 'up':
                 invalid_positive = True
-            elif number < 0:
+            elif side == 'down':
                 invalid_negative = True
             else:
                 invalid_flat = True
             continue
         bins[key] = value
-        if number > 0:
+        if side == 'up':
             positive.append(value)
-        elif number < 0:
+        elif side == 'down':
             negative.append(value)
         else:
             saw_flat = True
             flat_value = value
-    # 没有已核验的「省略即零」规则：某一方向完全没有有效桶，或该方向有无效桶，总数保持未知。
-    if not bins and not (invalid_positive or invalid_negative or invalid_flat):
+    # 没有已核验的「省略即零」规则：某一方向完全没有有效桶，或该方向有无效桶或键值冲突，该方向保持未知。
+    # 正负键只按符号相加（含 11 与 -11）。这是已识别分桶的部分家数，不写成全市场家数。
+    conflict_positive = 'up' in conflict_sides
+    conflict_negative = 'down' in conflict_sides
+    conflict_flat = 'flat' in conflict_sides
+    if not bins and not (
+        invalid_positive or invalid_negative or invalid_flat
+        or conflict_positive or conflict_negative or conflict_flat
+    ):
         gaps.append(f'fenbu 里没有可用家数。试过的路径：{shown}。未改读其他接口。')
         return _envelope('breadth', day, [], gaps, notes)
-    if invalid_positive:
-        up = None
-        gaps.append('上涨方向有无效桶，up 记为未知，未把其余上涨桶加总成完整家数。')
-    elif positive:
-        up = sum(positive)
-    else:
-        up = None
-    if invalid_negative:
-        down = None
-        gaps.append('下跌方向有无效桶，down 记为未知，未把其余下跌桶加总成完整家数。')
-    elif negative:
-        down = sum(negative)
-    else:
-        down = None
-    if invalid_flat:
+    up = _direction_count(
+        positive, invalid_positive, conflict_positive,
+        '上涨方向有键值冲突，up 记为未知，未把其余上涨桶加总，也未覆盖或相加冲突值。',
+        '上涨方向有无效桶，up 记为未知，未把其余上涨桶加总成完整家数。',
+        gaps,
+    )
+    down = _direction_count(
+        negative, invalid_negative, conflict_negative,
+        '下跌方向有键值冲突，down 记为未知，未把其余下跌桶加总，也未覆盖或相加冲突值。',
+        '下跌方向有无效桶，down 记为未知，未把其余下跌桶加总成完整家数。',
+        gaps,
+    )
+    if invalid_flat or conflict_flat:
         flat = None
-        gaps.append('平盘桶值无效，flat 记为未知，未补 0。')
+        if conflict_flat:
+            gaps.append('平盘桶有键值冲突，flat 记为未知，未补 0，也未覆盖或相加冲突值。')
+        if invalid_flat:
+            gaps.append('平盘桶值无效，flat 记为未知，未补 0。')
     elif saw_flat:
         flat = flat_value
     else:

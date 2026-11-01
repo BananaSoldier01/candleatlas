@@ -161,3 +161,10 @@ body.privacy-on textarea.private-text.private-revealed,body.privacy-on input.pri
 .reading-notes{margin:8px 0 0;padding-left:18px;font-size:12px;line-height:1.8}
 .technical-assessment h4{margin:12px 0 6px;font-size:14px;font-weight:600}
 @media(max-width:700px){.watch-point-row{grid-template-columns:1fr}}
+
+.candle-nav{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;margin:12px 0 4px}
+.candle-nav[hidden]{display:none}
+.candle-nav button{min-height:44px;padding:0 12px;background:#fff;color:var(--ink);border:1px solid var(--line);border-radius:6px}
+.candle-nav button[aria-disabled="true"]{color:var(--muted);background:#f5f7f3;cursor:default}
+.candle-nav output{font-size:13px;text-align:center;white-space:pre-line;line-height:1.45;font-variant-numeric:tabular-nums}
+.candle[tabindex="0"] rect[fill="transparent"]{stroke:#39799b;stroke-width:1}

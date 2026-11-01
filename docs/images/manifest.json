@@ -9,6 +9,20 @@
       "width": 1600,
       "height": 1120
     },
+    "docs/images/candle-navigation-desktop.png": {
+      "sha256": "418791eeb8d285a40639339641629a30460f1a88a26af19b7e7de3105287ee2f",
+      "width": 1280,
+      "height": 900,
+      "capture_date": "2026-11-01",
+      "viewport_width": 1280
+    },
+    "docs/images/candle-navigation-mobile.png": {
+      "sha256": "4d536504678672527c3e097913f9dc777199825934dd85b97acf2f389ca312b1",
+      "width": 390,
+      "height": 900,
+      "capture_date": "2026-11-01",
+      "viewport_width": 390
+    },
     "docs/images/guide.png": {
       "sha256": "ce0ab64c904e716ef9195c95aaf2bd948f84c9164e35fcfb24bbe1e6aa5ae517",
       "width": 1600,

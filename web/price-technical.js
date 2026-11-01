@@ -76,7 +76,7 @@
         const up=event.kind==='up',cy=up?Math.min(T+PH-5,y(b.low_price)+10):Math.max(T+5,y(b.high_price)-10);
         shape=`<path d="M${x} ${cy+(up?-4:4)}l4 ${up?7:-7}h-8Z" fill="${colors[event.kind]}"/>`;
       }
-      svg+=`<g tabindex="0" role="button" data-candle="${p.index}" data-technical-marker="${event.kind}" aria-label="${escape(label)}"><title>${escape(label)}</title>${shape}</g>`;
+      svg+=`<g data-candle="${p.index}" data-technical-marker="${event.kind}" aria-label="${escape(label)}"><title>${escape(label)}</title>${shape}</g>`;
     }
     return svg+'</g>';
   }

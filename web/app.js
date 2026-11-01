@@ -227,10 +227,12 @@ let priceGeometry=null,pricePointer=null,pricePointerFrame=0;
 function hidePriceCursor(){
   cancelAnimationFrame(pricePointerFrame);pricePointerFrame=0;pricePointer=null;
   $('price-crosshair')?.setAttribute('hidden','');
-  $('price-cursor-readout').textContent='移动鼠标查看日期和纵轴刻度；点选或用键盘聚焦 K 线也可查看。';
+  $('price-cursor-readout').textContent='移动指针查看刻度。聚焦 K 线后，可按左右键逐根查看，Home / End 跳到首末。';
+  const selected=priceGeometry?.candles[priceGeometry.position];
+  if(selected)$('candle-detail').textContent='已选行情 · '+selected.getAttribute('aria-label');
 }
 function clearPrice(text) {
-  priceGeometry=null;hidePriceCursor();
+  priceGeometry=null;hidePriceCursor();$('candle-nav').hidden=true;
   for(const id of ['close-price','price-change','price-volume'])$(id).textContent='—';
   $('price-facts').textContent='';$('candle-detail').textContent='悬停或用键盘聚焦 K 线查看当日行情';
   $('price-label').textContent='前复权收盘价';
@@ -300,7 +302,7 @@ function renderPrices() {
   const step=(W-L-R)/items.length,body=Math.max(2,Math.min(10,step*.65));
   const y=p=>T+(max-p)/(max-min)*PH;
   const vmax=Math.max(1,...valid.map(b=>Number.isFinite(b.volume)?b.volume:0));
-  let svg=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(state.stock.name)}前复权${cycleName}与成交量${subplots?'、RSI14和MACD副图':''}">`;
+  let svg=`<svg viewBox="0 0 ${W} ${H}" role="group" aria-describedby="price-cursor-readout" aria-label="${esc(state.stock.name)}前复权${cycleName}与成交量${subplots?'、RSI14和MACD副图':''}">`;
   for(let i=0;i<5;i++){
     const price=max-(max-min)*i/4,yy=T+PH*i/4;
     svg+=`<line class="grid" x1="${L}" y1="${yy}" x2="${W-R}" y2="${yy}"/><text x="${L-8}" y="${yy+4}" text-anchor="end">${price.toFixed(2)}</text>`;
@@ -311,7 +313,7 @@ function renderPrices() {
     if(usable(b)){
       const color=b.close_price>=b.open_price?'#c65148':'#257555';
       const title=`${b.start_date?b.start_date+' — ':''}${b.date}${b.missing_days?'（'+b.missing_days+' 日无数据）':''} 开 ${b.open_price.toFixed(2)} / 高 ${b.high_price.toFixed(2)} / 低 ${b.low_price.toFixed(2)} / 收 ${b.close_price.toFixed(2)}；成交量 ${formatShares(b.volume)}${technical&&technical[i].close!==null?'；'+PriceTechnical.description(technical[i]):''}`;
-      svg+=`<g tabindex="0" class="candle" data-candle="${i}" aria-label="${esc(title)}"><title>${esc(title)}</title><rect x="${x-step/2}" y="${T}" width="${step}" height="${subplots?760-T:VT+VH-T}" fill="transparent"/><line x1="${x}" y1="${y(b.high_price)}" x2="${x}" y2="${y(b.low_price)}" stroke="${color}"/><rect x="${x-body/2}" y="${y(Math.max(b.open_price,b.close_price))}" width="${body}" height="${Math.max(1,Math.abs(y(b.open_price)-y(b.close_price)))}" fill="${color}"/>`;
+      svg+=`<g tabindex="-1" role="group" class="candle" data-date="${esc(b.date)}" data-candle="${i}" aria-label="${esc(title)}"><title>${esc(title)}</title><rect x="${x-step/2}" y="${T}" width="${step}" height="${subplots?760-T:VT+VH-T}" fill="transparent"/><line x1="${x}" y1="${y(b.high_price)}" x2="${x}" y2="${y(b.low_price)}" stroke="${color}"/><rect x="${x-body/2}" y="${y(Math.max(b.open_price,b.close_price))}" width="${body}" height="${Math.max(1,Math.abs(y(b.open_price)-y(b.close_price)))}" fill="${color}"/>`;
       if(Number.isFinite(b.volume)&&b.volume>=0){const h=b.volume/vmax*VH;svg+=`<rect x="${x-body/2}" y="${VT+VH-h}" width="${body}" height="${h}" fill="${color}" opacity=".65"/>`;}
       svg+='</g>';
     }
@@ -322,9 +324,17 @@ function renderPrices() {
   if(window.chanOverlay)svg+=window.chanOverlay({items,L,R,W,T,PH,step,y});
   if(subplots)svg+=PriceTechnical.panels(technical,{items,L,R,W,step});
   svg+='<g id="price-crosshair" class="price-crosshair" hidden><line id="price-crosshair-x"/><line id="price-crosshair-y"/><g id="price-cursor-y"><rect rx="3"/><text class="price-cursor-label" text-anchor="middle"/></g><g id="price-cursor-date"><rect rx="3"/><text class="price-cursor-label" text-anchor="middle"/></g></g>';
-  $('price-chart').innerHTML=svg+'</svg>';
-  priceGeometry={items,L,R,W,T,PH,VT,VH,step,min,max,vmax,subplots:!!subplots,macdExtent:technical?PriceTechnical.macdExtent(technical):null};
+  const chart=$('price-chart'), hadFocus=chart.contains(document.activeElement);
+  const old=priceGeometry;
+  // 重绘时保留手动选中的日期。原先停在末根时随回放终点移动。
+  const keepDate=old && old.position!==old.candles.length-1 ? old.candles[old.position]?.dataset.date : null;
+  chart.innerHTML=svg+'</svg>';
+  const candles=Array.from(chart.querySelectorAll('.candle'));
+  priceGeometry={items,L,R,W,T,PH,VT,VH,step,min,max,vmax,subplots:!!subplots,macdExtent:technical?PriceTechnical.macdExtent(technical):null,candles,position:-1};
+  $('candle-nav').hidden=false;
+  selectCandle(candles.find(c=>c.dataset.date===keepDate)||candles.at(-1));
   hidePriceCursor();
+  if(hadFocus)candles[priceGeometry.position].focus();
   $('price-note').textContent=`${items[0].start_date||items[0].date} — ${items.at(-1).date} · 前复权 · 红涨绿跌（收盘对比开盘）；${valid.length} 根${cycleName}${items.length>valid.length?`，${items.length-valid.length} 个周期无数据留空`:''}。${last.date!==(window.chanReplayEnd?.()||state.prices.end)?`区间末日暂无 K 线，最新数据为 ${last.date}。`:''}${state.prices.aggregation||''}${last.date===new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'})?'包含当日数据，末根 K 线可能尚未定稿。':''}`;
 }
 $('view-tabs').addEventListener('click',event=>{
@@ -341,15 +351,44 @@ $('view-tabs').addEventListener('click',event=>{
   }else if(state.view==='heat'){if(state.trend)renderTrend();else loadTrend();}
   else if(state.view==='intraday'){setMinuteMode(button.dataset.mode);}
 });
-function showCandleDetail(event){
-  const candle=event.target.closest('[data-candle]');
-  if(candle)$('candle-detail').textContent=candle.getAttribute('aria-label');
-  if(candle&&event.type==='focusin'&&priceGeometry){
-    const index=Number(candle.dataset.candle),b=priceGeometry.items[index];
-    if(Number.isFinite(b?.close_price))showPriceCursor(priceGeometry.L+(index+.5)*priceGeometry.step,priceGeometry.T+(priceGeometry.max-b.close_price)/(priceGeometry.max-priceGeometry.min)*priceGeometry.PH);
+function selectCandle(candle, atClose=true){
+  const g=priceGeometry;
+  if(!g||!candle)return;
+  const previous=g.candles[g.position];
+  if(previous!==candle){
+    previous?.setAttribute('tabindex','-1');
+    g.position=g.candles.indexOf(candle);
+    candle.setAttribute('tabindex','0');
+    $('candle-position').textContent=candle.dataset.date+'\n第 '+(g.position+1)+' / '+g.candles.length+' 根';
+    $('candle-prev').setAttribute('aria-disabled',String(g.position===0));
+    $('candle-next').setAttribute('aria-disabled',String(g.position===g.candles.length-1));
   }
+  if(!atClose)return;
+  const chart=$('price-chart');
+  if(chart.scrollWidth>chart.clientWidth){
+    const box=chart.getBoundingClientRect(),bar=candle.getBoundingClientRect();
+    if(bar.left<box.left)chart.scrollLeft+=bar.left-box.left-6;
+    else if(bar.right>box.right)chart.scrollLeft+=bar.right-box.right+6;
+  }
+  cancelAnimationFrame(pricePointerFrame);pricePointerFrame=0;pricePointer=null;
+  const i=Number(candle.dataset.candle), close=g.items[i].close_price;
+  showPriceCursor(g.L+(i+.5)*g.step,g.T+(g.max-close)/(g.max-g.min)*g.PH);
 }
-function showPriceCursor(x,y){
+function stepCandle(key, focus){
+  const g=priceGeometry;
+  if(!g)return;
+  const next={ArrowLeft:g.position-1,ArrowRight:g.position+1,Home:0,End:g.candles.length-1}[key];
+  const candle=g.candles[next];
+  if(!candle)return;
+  if(focus&&document.activeElement!==candle)candle.focus();
+  else selectCandle(candle);
+}
+function showCandleDetail(event){
+  const target=event.target.closest('[data-candle]');
+  if(!target)return;
+  selectCandle($('price-chart').querySelector('.candle[data-candle="'+target.dataset.candle+'"]'));
+}
+function showPriceCursor(x,y,commit=false){
   const g=priceGeometry,hit=PriceTechnical.cursorAt(g,x,y);
   if(!hit){hidePriceCursor();return;}
   const set=(node,values)=>{for(const [name,value]of Object.entries(values))node.setAttribute(name,value);};
@@ -371,13 +410,16 @@ function showPriceCursor(x,y){
   const b=g.items[hit.index],dateText=b.start_date?b.start_date+' — '+b.date:hit.date;
   $('price-cursor-readout').textContent=dateText+(hit.kind?' · '+labels[hit.kind]+' '+(hit.kind==='volume'?formatShares(hit.value):hit.value.toFixed(hit.kind==='macd'?4:2)+(hit.kind==='price'?' 元':''))+'（坐标刻度，不是当天实际值）':' · 移入价格、成交量或副图区可查看纵轴刻度');
   const candle=$('price-chart').querySelector(`.candle[data-candle="${hit.index}"]`);
-  $('candle-detail').textContent=candle?candle.getAttribute('aria-label'):hit.date+' · 该周期无有效行情；光标仅表示坐标刻度。';
+  if(commit&&candle)selectCandle(candle,false);
+  const prefix=candle===g.candles[g.position]?'已选行情 · ':'指针预览 · ';
+  $('candle-detail').textContent=prefix+(candle?candle.getAttribute('aria-label'):hit.date+' · 该周期无有效行情；光标仅表示坐标刻度。');
 }
 function pricePointerPosition(event){
   const svg=$('price-chart').querySelector('svg'),matrix=svg?.getScreenCTM();
   if(!matrix)return;
   const point=new DOMPoint(event.clientX,event.clientY).matrixTransform(matrix.inverse());
-  showPriceCursor(point.x,point.y);
+  if(event.type==='click'&&event.target.closest('[data-technical-marker]')){showCandleDetail(event);return;}
+  showPriceCursor(point.x,point.y,event.type==='click');
 }
 $('price-chart').addEventListener('pointermove',event=>{
   if(event.pointerType==='touch')return;
@@ -387,12 +429,16 @@ $('price-chart').addEventListener('pointermove',event=>{
 $('price-chart').addEventListener('pointerdown',event=>{if(event.pointerType==='touch')pricePointerPosition(event);});
 $('price-chart').addEventListener('pointerleave',hidePriceCursor);
 $('price-chart').addEventListener('focusout',event=>{if(!$('price-chart').contains(event.relatedTarget))hidePriceCursor();});
-$('price-chart').addEventListener('mouseover',showCandleDetail);
 $('price-chart').addEventListener('focusin',showCandleDetail);
-$('price-chart').addEventListener('click',showCandleDetail);
 $('price-chart').addEventListener('click',pricePointerPosition);
-$('price-chart').addEventListener('keydown',event=>{if(event.key==='Escape')hidePriceCursor();});
-$('price-chart').addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)&&event.target.closest('[data-technical-marker]')){event.preventDefault();showCandleDetail(event);}});
+$('price-chart').addEventListener('keydown',event=>{
+  if(event.key==='Escape')hidePriceCursor();
+  if(event.target.closest('.candle')&&['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){
+    event.preventDefault();stepCandle(event.key,true);
+  }
+});
+$('candle-prev').addEventListener('click',()=>stepCandle('ArrowLeft',false));
+$('candle-next').addEventListener('click',()=>stepCandle('ArrowRight',false));
 $('price-technical-enabled').addEventListener('change',()=>{if(state.prices)renderPrices();});
 $('price-indicators-enabled').addEventListener('change',()=>{if(state.prices)renderPrices();});
 $('price-technical-events').addEventListener('click',event=>{

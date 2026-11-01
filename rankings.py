@@ -27,6 +27,13 @@ def sort_quotes(rows, kind):
     return [{**r, 'rank': i+1} for i, r in enumerate(valid)]
 
 
+def validate_ranking_request(kind, period, offset, limit):
+    if kind not in ('hot','rising','gainers','losers','turnover') or period not in ('day','hour'):
+        raise DataError('榜单或周期无效。')
+    if offset < 0 or limit not in (10,30,50):
+        raise DataError('榜单分页参数无效。')
+
+
 class Rankings:
     def __init__(self, market):
         self.market = market
@@ -110,9 +117,7 @@ class Rankings:
         return result
 
     def get(self, day, kind, period='day', offset=0, limit=10):
-        if kind not in ('hot','rising','gainers','losers','turnover') or period not in ('day','hour'):
-            raise DataError('榜单或周期无效。')
-        if offset < 0 or limit not in (10,30,50): raise DataError('榜单分页参数无效。')
+        validate_ranking_request(kind, period, offset, limit)
         calendar = self.market.calendar()
         if day not in calendar: raise DataError('请选择可用交易日。')
         current = day == calendar[-1]

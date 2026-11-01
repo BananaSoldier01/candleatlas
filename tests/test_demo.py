@@ -31,6 +31,62 @@ class DemoTests(unittest.TestCase):
     def test_demo_is_clearly_synthetic(self):
         _,r=self.request('/api/runtime');self.assertTrue(r['synthetic']);self.assertTrue(r['read_only']);self.assertEqual(r['mode'],'demo')
         self.assertTrue(all('合成'in s['name']for s in self.demo.quotes(self.demo.day)))
+    def test_rankings_sort_filter_and_page_the_selected_synthetic_day(self):
+        # 该日三只样本的涨跌幅依次为 -0.08%、+0.29%、+0.19%，成交额从小到大。
+        path = '/api/rankings?date=2026-02-17&kind='
+        expected = {'gainers': ['000001.SZ', '920001.BJ'], 'losers': ['600000.SH'],
+                    'turnover': ['920001.BJ', '000001.SZ', '600000.SH'],
+                    'hot': ['600000.SH', '000001.SZ', '920001.BJ']}
+        with patch('urllib.request.OpenerDirector.open', side_effect=AssertionError('network forbidden')), \
+             patch('market.load_key', side_effect=AssertionError('key forbidden')), \
+             patch('sqlite3.connect', side_effect=AssertionError('database forbidden')):
+            for kind, codes in expected.items():
+                with self.subTest(kind=kind):
+                    status, data = self.request(path + kind)
+                    self.assertEqual(status, 200)
+                    self.assertTrue(data['synthetic'])
+                    self.assertEqual(data['source_date'], '2026-02-17')
+                    self.assertEqual([r['thscode'] for r in data['items']], codes)
+                    self.assertEqual([r['rank'] for r in data['items']], list(range(1, len(codes)+1)))
+                    _, page = self.request(path + kind + '&offset=1&limit=30')
+                    self.assertEqual((page['offset'], page['limit'], page['total']), (1, 30, len(codes)))
+                    self.assertEqual(page['items'], data['items'][1:])
+        status, overview = self.request('/api/overview?date=2026-02-17')
+        self.assertEqual(status, 200)
+        self.assertEqual(overview['source'], '程序合成示例')
+        self.assertEqual([r['thscode'] for r in overview['leaders']], expected['turnover'])
+        self.assertEqual((overview['valid'], overview['received'], overview['universe']), (3, 3, 3))
+
+    def test_rankings_distinguish_no_matches_from_missing_demo_sample(self):
+        _, none = self.request('/api/rankings?kind=losers&date=' + self.demo.day)
+        self.assertEqual(none['items'], [])
+        self.assertIsNone(none['unavailable'])
+        for query in ('kind=hot&period=hour', 'kind=rising&period=day', 'kind=rising&period=hour'):
+            with self.subTest(query=query):
+                status, missing = self.request('/api/rankings?' + query)
+                self.assertEqual(status, 200)
+                self.assertEqual((missing['items'], missing['total']), ([], 0))
+                self.assertIn('未提供', missing['unavailable'])
+        for query in ('kind=unknown', 'period=week', 'offset=-1', 'limit=1', 'date=2099-01-01'):
+            with self.subTest(query=query):
+                status, invalid = self.request('/api/rankings?' + query)
+                self.assertNotEqual(status, 200)
+                self.assertIn('error', invalid)
+    def test_first_demo_day_has_no_return_but_traded_values_remain_available(self):
+        day = self.demo.market.dates[0]
+        for kind in ('hot', 'turnover', 'losers', 'gainers'):
+            with self.subTest(kind=kind):
+                status, data = self.request(f'/api/rankings?date={day}&kind={kind}')
+                self.assertEqual(status, 200)
+                if kind in ('hot', 'turnover'):
+                    self.assertEqual(len(data['items']), 3)
+                    self.assertTrue(all(r['price_change_ratio_pct'] is None for r in data['items']))
+                else:
+                    self.assertEqual(data['items'], [])
+                    self.assertIn('前收盘价', data['unavailable'])
+        status, data = self.request('/api/overview?date=' + day)
+        self.assertNotEqual(status, 200)
+        self.assertIn('前收盘价', data['error'])
     def test_report_uses_production_calculator_and_delta(self):
         r=self.demo.report('600000.SH',self.demo.day);rows=self.demo.market.prices('600000.SH',self.demo.day,250)['items']
         self.assertEqual(r['report']['technical'],technical(rows));self.assertTrue(r['delta']['rows']);self.assertIsNone(r['report']['ai']);self.assertIn(NOTICE,r['report']['limitations'])

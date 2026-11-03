@@ -3,7 +3,7 @@ import datetime as dt
 import re
 import uuid
 
-from analysis import technical
+from analysis import TECHNICAL_WINDOW, technical
 from market import DataError, today
 from rankings import finite
 
@@ -71,7 +71,8 @@ def review_phrase(item):
     status=item.get('status') if isinstance(item, dict) else None
     if status=='appeared':
         day=item.get('first_seen_date') or '—'
-        return f"已出现（首次 {day}，当日取值 {_num_text(item.get('value_at_first_seen'))}）"
+        when=f'此前有数据缺口，首次可核实 {day}' if item.get('earlier_data_missing') else f'首次 {day}'
+        return f"已出现（{when}，当日取值 {_num_text(item.get('value_at_first_seen'))}）"
     if status=='not_appeared':
         return f"未出现（已核对 {int(item.get('checked_days') or 0)} 个交易日）"
     if status=='intraday':
@@ -190,13 +191,15 @@ def _condition(tech, point):
     return None, None
 
 
-def _finish(point, status, checked, first, value):
+def _finish(point, status, checked, first, value, *, earlier_data_missing=False):
     item={
         'id':point.get('id') if isinstance(point, dict) else None,
         'kind':point.get('kind') if isinstance(point, dict) else None,
         'label':describe_point(point) if isinstance(point, dict) else '观察点',
         'status':status,'checked_days':checked,'first_seen_date':first,'value_at_first_seen':value,
     }
+    if status=='appeared' and earlier_data_missing:
+        item['earlier_data_missing']=True
     item['phrase']=review_phrase(item)
     return item
 
@@ -204,7 +207,7 @@ def _finish(point, status, checked, first, value):
 def review_points(prices_rows, observed, end, points, calendar, as_of=None, now=None):
     """Whether each condition showed up after the observation day.
 
-    For day d, only bars on or before d are used. Calendar days without a bar stay
+    Each day uses the report's trailing 250 trading sessions. Days without a bar stay
     empty; they are not filled from a neighbouring close. Missing data is not
     treated as the condition failing.
 
@@ -223,10 +226,7 @@ def review_points(prices_rows, observed, end, points, calendar, as_of=None, now=
         raise DataError('观察日期无效。')
     cap=end if end<=as_of else as_of
     unsettled=provisional_bar_date(as_of, now=now)
-    days=[]
-    for day in sorted(d for d in calendar if isinstance(d, str)):
-        if day<=cap and day not in days:
-            days.append(day)
+    days=sorted({d for d in calendar if isinstance(d,str) and d<=cap})
     by_date={}
     if isinstance(prices_rows, list):
         for row in prices_rows:
@@ -248,7 +248,8 @@ def review_points(prices_rows, observed, end, points, calendar, as_of=None, now=
 
     def tech_on(day):
         if day not in cache:
-            cache[day]=technical(aligned[:index[day]+1])
+            stop=index[day]+1
+            cache[day]=technical(aligned[max(0,stop-TECHNICAL_WINDOW):stop])
         return cache[day]
 
     results=[]
@@ -296,5 +297,5 @@ def review_points(prices_rows, observed, end, points, calendar, as_of=None, now=
             status='data_missing'
         else:
             status='not_appeared'
-        results.append(_finish(point, status, checked, first, value))
+        results.append(_finish(point, status, checked, first, value, earlier_data_missing=missing))
     return results

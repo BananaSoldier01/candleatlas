@@ -11,6 +11,7 @@ from number_gate import MARK, gate_ai_report
 from rankings import finite
 
 PROMPT_VERSION='guanshi-research-1'
+TECHNICAL_WINDOW=250
 
 def technical(rows):
     tail=[]
@@ -163,14 +164,14 @@ class Analysis:
         def evidence(key,title,value,source):payload['evidence'].append({'id':key,'title':title,'value':value,'source':source})
         try:
             try:
-                prices=self.market.prices(code,day,250)
+                prices=self.market.prices(code,day,TECHNICAL_WINDOW)
                 rows=[r for r in prices['items'] if r['date']<=day]
                 if not rows or rows[-1]['date']!=day:rows.append({'date':day})
                 payload['technical']=technical(rows)
                 try:
                     from tech_score import evaluate as _evaluate
                     payload['assessment']=_evaluate(payload['technical'], context={
-                        'source':'analysis.run','window':250,'asof':day})
+                        'source':'analysis.run','window':TECHNICAL_WINDOW,'asof':day})
                     if payload.get('assessment') is not None:
                         payload['assessment']['method_note']='量能配合使用当日涨跌与当日成交量；分项同时标注规则覆盖度。'
                 except Exception:

@@ -215,6 +215,8 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(halt[0]['status'],'data_missing')
         self.assertEqual(halt[1]['status'],'appeared')
         self.assertEqual(halt[1]['first_seen_date'],'2026-09-03')
+        self.assertTrue(halt[1]['earlier_data_missing'])
+        self.assertIn('首次可核实',halt[1]['phrase'])
         self.assertEqual(halt[1]['value_at_first_seen'],30)
         calendar=['2026-09-01','2026-09-02','2026-09-03','2026-09-04']
         rows=closes({'2026-09-01':10,'2026-09-02':10,'2026-09-03':10,'2026-09-04':100})
@@ -232,6 +234,60 @@ class ReviewTests(unittest.TestCase):
         clipped=self.review(closes({'2026-09-01':10,'2026-09-02':10,'2026-09-03':10,'2026-09-04':80}), [metric()], end='2026-09-09', as_of='2026-09-03')[0]
         self.assertEqual(clipped['status'],'not_appeared')
         self.assertIsNone(clipped['first_seen_date'])
+
+
+class LongFollowupTests(unittest.TestCase):
+    def setUp(self):
+        self.days=[]
+        day=dt.date(2024,1,1)
+        while len(self.days)<640:
+            if day.weekday()<5:
+                self.days.append(day.isoformat())
+            day+=dt.timedelta(days=1)
+        self.rows=[bar(d,10) for d in self.days]
+        self.market=Mock()
+        self.market.calendar.return_value=self.days
+        self.market.get.side_effect=self.quotes
+
+    def quotes(self, endpoint, params, ttl):
+        self.assertEqual((endpoint,params['interval'],params['adjust']),('prices/historical','1d','forward'))
+        quotes=[]
+        for row in self.rows:
+            stamp=int(dt.datetime.fromisoformat(row['date']).replace(tzinfo=TZ).timestamp()*1000)
+            if params['start']<=stamp<=params['end']:
+                quotes.append({**row,'date_ms':stamp})
+        return {'item':quotes}
+
+    def run_review(self, observed, end, point):
+        store=Mock()
+        store.list.return_value={'items':[{'id':'saved','thscode':'000001.SZ','date':self.days[observed],
+                                          'watch_points':validate_points([point])}]}
+        return followup(self.market,'000001.SZ',self.days[observed],self.days[end],'saved',store)
+
+    def test_extending_followup_keeps_earliest_occurrence(self):
+        for i in (81,190):
+            self.rows[i]=bar(self.days[i],25)
+        for end in (100,379):
+            with self.subTest(end=self.days[end]):
+                self.market.get.reset_mock()
+                result=self.run_review(80,end,metric(value=20))
+                item=result['watch_review']['items'][0]
+                self.assertEqual((item['status'],item['first_seen_date'],item['value_at_first_seen']),
+                                 ('appeared',self.days[81],25))
+                self.market.get.assert_called_once()
+
+    def test_daily_indicator_uses_report_window_before_each_session(self):
+        for i,day in enumerate(self.days):
+            self.rows[i]=bar(day,40+(i%17))
+        # A late end date must not discard the RSI warm-up for the initial days.
+        # Reuse the formal technical calculator on the 250 sessions ending at d.
+        with patch('watch_points.technical', wraps=technical) as calc:
+            result=self.run_review(300,620,metric(metric='rsi14',value=0,days=3))
+        item=result['watch_review']['items'][0]
+        self.assertEqual(item['first_seen_date'],self.days[303])
+        self.assertEqual(item['value_at_first_seen'],technical(self.rows[54:304])['rsi14'])
+        self.assertEqual([[r['date'] for r in call.args[0]] for call in calc.call_args_list],
+                         [self.days[i-249:i+1] for i in (301,302,303)])
 
 
 class FollowupRouteTests(unittest.TestCase):
@@ -301,7 +357,7 @@ class FollowupRouteTests(unittest.TestCase):
             self.assertEqual(call.args[0],'prices/historical')
             self.assertEqual(call.args[1]['adjust'],'forward')
             self.assertEqual(call.args[1]['interval'],'1d')
-        self.assertGreaterEqual(len(self.market.get.call_args_list), 2)
+        self.market.get.assert_called_once()
         status, mismatch=self.request(f'/api/followup?code=000001.SZ&observed=2026-09-17&date=2026-09-24&id={self.oid}')
         self.assertEqual(status, 502)
         self.assertEqual(mismatch['error'],'观察记录与股票不一致。')

@@ -10,6 +10,7 @@ from report_compare import delta_view
 from tech_score import evaluate
 from watch_points import describe_point, validate_points
 from market import Market,DataError,TZ
+from rankings import sort_quotes, validate_ranking_request
 
 NOTICE='演示模式：全部数据由程序合成，非真实行情；不联网、不调用AI、不保存操作。'
 STOCKS=[dict(thscode='600000.SH',name='合成示例甲',asset_type='a-share'),dict(thscode='000001.SZ',name='合成示例乙',asset_type='a-share'),dict(thscode='920001.BJ',name='合成示例丙',asset_type='a-share')]
@@ -64,9 +65,32 @@ class Demo:
     def quotes(self,day):
         self.market.window(day,1);i=self.market.dates.index(day);rows=[]
         for s in STOCKS:
-            b=self.market.series[s['thscode']][i];prev=self.market.series[s['thscode']][max(0,i-1)]['close_price']
-            rows.append(dict(s,last_price=b['close_price'],price_change_ratio_pct=round((b['close_price']/prev-1)*100,2),volume=b['volume'],turnover=round(b['close_price']*b['volume'],2)))
+            bars=self.market.series[s['thscode']]
+            b=bars[i]
+            change=round((b['close_price']/bars[i-1]['close_price']-1)*100,2) if i else None
+            rows.append(dict(s,last_price=b['close_price'],price_change_ratio_pct=change,volume=b['volume'],turnover=round(b['close_price']*b['volume'],2)))
         return rows
+    def rankings(self, day, kind, period, offset, limit):
+        validate_ranking_request(kind, period, offset, limit)
+        quotes = self.quotes(day)
+        unavailable = None
+        if period == 'hour' or kind == 'rising':
+            rows = []
+            unavailable = '演示未提供小时榜样本。' if period == 'hour' else '演示未提供热度飙升幅度样本。'
+            note = '可切换到人气日榜，或查看三只合成股票的行情排行。'
+        elif kind == 'hot':
+            hot = self.market.hot(day)['items']
+            by_code = {r['thscode']: r for r in quotes}
+            rows = [{**by_code[r['thscode']], **r} for r in hot]
+            note = '示例人气排名和热度由程序预设。涨跌幅来自所选日的合成行情。'
+        else:
+            rows = sort_quotes(quotes, kind)
+            note = '使用所选日三只合成股票的行情，按与正式榜单相同的规则排序。'
+            if kind in ('gainers', 'losers') and day == self.market.dates[0]:
+                unavailable = '首个合成交易日缺少前收盘价，无法计算涨跌幅。'
+        return {'date': day, 'kind': kind, 'period': period, 'source': '程序合成示例', 'source_date': day,
+                'synthetic': True, 'items': rows[offset:offset+limit], 'total': len(rows),
+                'offset': offset, 'limit': limit, 'unavailable': unavailable, 'note': note}
     def report(self,code,day):
         self.market.window(day,1);name=next((s['name']for s in STOCKS if s['thscode']==code),None)
         if name is None:raise DataError('演示股票不存在。')
@@ -106,10 +130,13 @@ class Demo:
         if path=='/api/overview-dates':return dict(dates=self.market.calendar())
         if path=='/api/overview':
             rows=self.quotes(day);bins=[0]*7
+            if day==self.market.dates[0]:
+                raise DataError('首个合成交易日缺少前收盘价，无法统计涨跌分布。')
             for r in rows:
                 v=r['price_change_ratio_pct'];bins[0 if v<=-5 else 1 if v<=-3 else 2 if v<0 else 3 if v==0 else 4 if v<3 else 5 if v<5 else 6]+=1
-            return dict(timestamp=int(dt.datetime.fromisoformat(day+'T15:00:00+08:00').timestamp()*1000),up=sum(r['price_change_ratio_pct']>0 for r in rows),down=sum(r['price_change_ratio_pct']<0 for r in rows),flat=sum(r['price_change_ratio_pct']==0 for r in rows),bins=bins,valid=3,received=3,universe=3,excluded=0,traded=3,turnover_sample=3,turnover=sum(r['turnover']for r in rows),leaders=rows,note=NOTICE)
-        if path=='/api/rankings':return dict(date=day,source_date=day,source='程序合成示例',items=[dict(r,rank=i+1,heat=3000-i*450,rank_change=0)for i,r in enumerate(self.quotes(day))],total=3,limit=int(one('limit','10')),offset=0,note=NOTICE)
+            return dict(timestamp=int(dt.datetime.fromisoformat(day+'T15:00:00+08:00').timestamp()*1000),up=sum(r['price_change_ratio_pct']>0 for r in rows),down=sum(r['price_change_ratio_pct']<0 for r in rows),flat=sum(r['price_change_ratio_pct']==0 for r in rows),bins=bins,valid=3,received=3,universe=3,excluded=0,traded=3,turnover_sample=3,turnover=sum(r['turnover']for r in rows),leaders=sort_quotes(rows,'turnover')[:5],source='程序合成示例',note=NOTICE)
+        if path=='/api/rankings':
+            return self.rankings(day, one('kind','hot'), one('period','day'), int(one('offset','0')), int(one('limit','10')))
         if path=='/api/observations':return dict(items=self.records(self.day))
         if path=='/api/followup':
             from tracking import followup

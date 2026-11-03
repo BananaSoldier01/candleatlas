@@ -37,6 +37,20 @@
       "sha256": "336411090226579f230345d133f0568b534d57ebf584f8fa816fe3963b14fc53",
       "width": 1600,
       "height": 1120
+    },
+    "docs/images/rankings-desktop.png": {
+      "sha256": "d0937f24241b1daf0778c2b30b7bf9b8952f46e76e13007fc225f6eff3801d2c",
+      "width": 1044,
+      "height": 368,
+      "capture_date": "2026-11-01",
+      "viewport_width": 1280
+    },
+    "docs/images/rankings-mobile.png": {
+      "sha256": "969ee0387ac9ac868b54c5c47d92113ec8b18e933fb472316f142d0cae1e7db4",
+      "width": 366,
+      "height": 381,
+      "capture_date": "2026-11-01",
+      "viewport_width": 390
     }
   }
 }

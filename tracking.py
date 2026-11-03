@@ -5,6 +5,7 @@ import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
+from analysis import TECHNICAL_WINDOW
 from market import DataError, TZ, today
 from rankings import finite
 from watch_points import describe_point, review_points, validate_points
@@ -97,25 +98,36 @@ def followup(market, code, observed, end, observation_id=None, tracking=None):
     if observed not in dates or end not in dates: raise DataError('观察日或回看日不是可用交易日。')
     base = dates.index(observed)
     horizons = [(n, dates[base+n] if base+n < len(dates) else None) for n in (1,3,5,10)]
-    ready = [d for _,d in horizons if d and d <= end]
-    prices = {}
-    if ready:
-        start = dt.datetime.combine(dt.date.fromisoformat(observed),dt.time(),TZ)
-        stop = dt.datetime.combine(dt.date.fromisoformat(max(ready)),dt.time(23,59,59),TZ)
-        data = market.get('prices/historical', {'thscode':code,'interval':'1d','adjust':'forward','start':int(start.timestamp()*1000),'end':int(stop.timestamp()*1000)}, ttl=60 if max(ready)==today() else 21600)
-        prices = {dt.datetime.fromtimestamp(r['date_ms']/1000,TZ).date().isoformat():r.get('close_price') for r in data['item']}
+    as_of=today()
+    cutoff=min(end,as_of)
+    ready=[d for _,d in horizons if d and d<=cutoff]
+    metric=any(isinstance(point,dict) and point.get('kind')=='metric' for point in points or [])
+    review_days=[d for d in dates[base+1:] if d<=cutoff] if metric else []
+    rows=[]
+    if review_days:
+        # First session after the observation plus the preceding report warm-up.
+        first=base+1
+        start_day=dates[max(0,first-TECHNICAL_WINDOW+1)]
+        rows=load_forward_rows(market,code,review_days[-1],start_day=start_day)
+    elif ready:
+        rows=load_forward_rows(market,code,ready[-1],start_day=observed)
+    prices={row['date']:row['close_price'] for row in rows}
     baseline = prices.get(observed)
     items = []
     for n, day in horizons:
         close = prices.get(day)
         valid = finite(baseline) and baseline > 0 and finite(close) and close > 0
-        provisional = day == today() and dt.datetime.now(TZ).hour < 16
-        status = '尚未到期' if not day or day > end else '盘中未定稿' if valid and provisional else '有数据' if valid else '日 K 缺失'
+        provisional = day == as_of and dt.datetime.now(TZ).hour < 16
+        status = '尚未到期' if not day or day > cutoff else '盘中未定稿' if valid and provisional else '有数据' if valid else '日 K 缺失'
         items.append({'days':n,'date':day,'change':round((close/baseline-1)*100,2) if valid else None,'status':status})
     result={'items':items,'baseline':baseline,'observed':observed,'end':end}
     if not observation_id:
         return result
-    return _attach_review(result, market, code, observed, end, dates, points)
+    result['watch_review']={
+        'items':review_points(rows, observed, end, points, dates, as_of=as_of),
+        'note':'基于当前查询的前复权序列，历史日不等于当时快照。历史补记不视为事前判断。',
+    }
+    return result
 
 
 def _present_points(raw):
@@ -141,12 +153,13 @@ def _present_points(raw):
     return points
 
 
-def load_forward_rows(market, code, end, lookback=250):
+def load_forward_rows(market, code, end, lookback=TECHNICAL_WINDOW, *, start_day=None):
     """Forward-adjusted daily bars through `end`, same endpoint as followup."""
-    dates=market.calendar()
-    if end not in dates:
-        raise DataError('观察日或回看日不是可用交易日。')
-    start_day=dates[max(0, dates.index(end)-(lookback-1))]
+    if start_day is None:
+        dates=market.calendar()
+        if end not in dates:
+            raise DataError('观察日或回看日不是可用交易日。')
+        start_day=dates[max(0, dates.index(end)-(lookback-1))]
     start=dt.datetime.combine(dt.date.fromisoformat(start_day), dt.time(), TZ)
     stop=dt.datetime.combine(dt.date.fromisoformat(end), dt.time(23, 59, 59), TZ)
     data=market.get('prices/historical', {'thscode':code,'interval':'1d','adjust':'forward','start':int(start.timestamp()*1000),'end':int(stop.timestamp()*1000)}, ttl=60 if end==today() else 21600)
@@ -156,20 +169,7 @@ def load_forward_rows(market, code, end, lookback=250):
         if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
             continue
         day=dt.datetime.fromtimestamp(stamp/1000, TZ).date().isoformat()
-        if day>end:
+        if not start_day<=day<=end:
             continue
         rows.append({'date':day,'open_price':bar.get('open_price'),'high_price':bar.get('high_price'),'low_price':bar.get('low_price'),'close_price':bar.get('close_price'),'volume':bar.get('volume')})
     return rows
-
-
-def _attach_review(result, market, code, observed, end, dates, points):
-    as_of=today()
-    cap=end if end<=as_of else as_of
-    later=any(isinstance(day, str) and observed<day<=cap for day in dates)
-    metric=any(isinstance(point, dict) and point.get('kind')=='metric' for point in points)
-    rows=load_forward_rows(market, code, end) if metric and later else []
-    result['watch_review']={
-        'items':review_points(rows, observed, end, points, dates, as_of=as_of),
-        'note':'基于当前查询的前复权序列，历史日不等于当时快照。历史补记不视为事前判断。',
-    }
-    return result
